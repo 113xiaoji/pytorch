@@ -527,6 +527,68 @@ num_guards_executed=0)
         self.assertTrue(guards_manager.check(foo))
         self.assertFalse(guards_manager.check({"a": 1, "b": 3}))
 
+    def test_guard_memo_support_debug_accepts_dict_backed_self_tree(self):
+        class Child:
+            pass
+
+        class Mod:
+            pass
+
+        child = Child()
+        model = Mod()
+        model._modules = {"child": child}
+
+        root = RootGuardManager()
+        self_mgr = root.framelocals_manager(
+            ("self", 0), "L['self']", model, default_mgr_enum
+        )
+        dict_mgr = self_mgr.get_generic_dict_manager(
+            "L['self'].__dict__", model.__dict__, default_mgr_enum
+        )
+        modules_mgr = dict_mgr.dict_getitem_manager(
+            "_modules", "L['self']._modules", model._modules, default_mgr_enum
+        )
+        child_mgr = modules_mgr.dict_getitem_manager(
+            "child",
+            "L['self']._modules['child']",
+            child,
+            default_mgr_enum,
+        )
+        child_mgr.add_id_match_guard(id(child), ["child is original"])
+
+        support = root.guard_memo_support_debug("L['self']")
+        self.assertEqual(
+            support,
+            {
+                "supported": True,
+                "reason": "",
+                "source": "",
+            },
+        )
+
+    def test_guard_memo_support_debug_rejects_generic_getattr(self):
+        class Mod:
+            @property
+            def value(self):
+                return 1
+
+        model = Mod()
+        root = RootGuardManager()
+        self_mgr = root.framelocals_manager(
+            ("self", 0), "L['self']", model, default_mgr_enum
+        )
+        value_mgr = self_mgr.generic_getattr_manager(
+            "value", "L['self'].value", 1, default_mgr_enum
+        )
+        value_mgr.add_equals_match_guard(1, ["value == 1"])
+
+        support = root.guard_memo_support_debug("L['self']")
+        self.assertEqual(support["supported"], False)
+        self.assertEqual(
+            support["reason"], "unsupported_accessor:GenericGetAttrGuardAccessor"
+        )
+        self.assertEqual(support["source"], "L['self'].value")
+
     def test_framelocals_guard_e2e(self):
         def fn(x, y, z):
             return x + y + z[0]

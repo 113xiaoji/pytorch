@@ -395,6 +395,21 @@ struct GuardMemoToken {
   }
 };
 
+struct GuardMemoSupportAnalysis {
+  bool supported{true};
+  std::string reason;
+  std::string source;
+
+  void mark_unsupported(std::string unsupported_reason, std::string src) {
+    if (!supported) {
+      return;
+    }
+    supported = false;
+    reason = std::move(unsupported_reason);
+    source = std::move(src);
+  }
+};
+
 void guard_memo_record_tensor_strides(
     GuardMemoToken& token,
     const at::Tensor& tensor) {
@@ -1837,6 +1852,10 @@ class LeafGuard {
     return false;
   }
 
+  virtual const char* guard_memo_unsupported_reason() const {
+    return "unsupported_leaf";
+  }
+
   virtual ~LeafGuard() = default;
 
  protected:
@@ -2663,6 +2682,9 @@ class GuardAccessor {
   virtual bool supports_guard_memo() const {
     return false;
   }
+  virtual const char* guard_memo_unsupported_reason() const {
+    return "unsupported_accessor";
+  }
   virtual GuardDebugInfo check_verbose_nopybind(PyObject* obj) = 0;
   virtual std::string repr() const = 0;
 
@@ -2897,31 +2919,59 @@ class GuardManager {
     return check_nopybind_template(value);
   }
 
-  bool supports_guard_memo_recursive() const {
+  bool analyze_guard_memo_support_recursive(
+      GuardMemoSupportAnalysis& analysis) const {
     for (const auto& guard : _leaf_guards) {
       if (!guard->supports_guard_memo()) {
+        analysis.mark_unsupported(
+            guard->guard_memo_unsupported_reason(), _source);
         return false;
       }
     }
     for (const auto& accessor : _accessors) {
-      if (!accessor->supports_guard_memo() ||
-          !accessor->get_guard_manager()->supports_guard_memo_recursive()) {
+      if (!accessor->supports_guard_memo()) {
+        analysis.mark_unsupported(
+            accessor->guard_memo_unsupported_reason(),
+            accessor->get_source());
+        return false;
+      }
+      if (!accessor->get_guard_manager()
+               ->analyze_guard_memo_support_recursive(analysis)) {
         return false;
       }
     }
     return true;
   }
 
-  bool supports_accessor_guard_memo_recursive(
+  bool supports_guard_memo_recursive() const {
+    GuardMemoSupportAnalysis analysis;
+    return analyze_guard_memo_support_recursive(analysis);
+  }
+
+  GuardMemoSupportAnalysis analyze_accessor_guard_memo_support(
       const std::string& source) const {
+    GuardMemoSupportAnalysis analysis;
     for (const auto& accessor : _accessors) {
       if (accessor->get_source() != source) {
         continue;
       }
-      return accessor->supports_guard_memo() &&
-          accessor->get_guard_manager()->supports_guard_memo_recursive();
+      if (!accessor->supports_guard_memo()) {
+        analysis.mark_unsupported(
+            accessor->guard_memo_unsupported_reason(),
+            accessor->get_source());
+        return analysis;
+      }
+      accessor->get_guard_manager()->analyze_guard_memo_support_recursive(
+          analysis);
+      return analysis;
     }
-    return false;
+    analysis.mark_unsupported("missing_accessor", source);
+    return analysis;
+  }
+
+  bool supports_accessor_guard_memo_recursive(
+      const std::string& source) const {
+    return analyze_accessor_guard_memo_support(source).supported;
   }
 
   template <typename T>
@@ -4003,6 +4053,10 @@ class GetAttrGuardAccessor : public GuardAccessor {
   // user-defined Python code, so a token for a previously returned object is
   // not enough to prove a later accessor evaluation would return the same
   // value.
+  const char* guard_memo_unsupported_reason() const override {
+    return "unsupported_accessor:GetAttrGuardAccessor";
+  }
+
   GuardDebugInfo check_verbose_nopybind(
       PyObject* obj) override { // borrowed ref
     PyObject* x = PyObject_GetAttr(obj, _attr_name); // new ref
@@ -4082,6 +4136,10 @@ class GenericGetAttrGuardAccessor : public GuardAccessor {
 
   // Do not support guard memo here for the same reason as GetAttrGuardAccessor:
   // generic attribute lookup can run descriptor logic.
+  const char* guard_memo_unsupported_reason() const override {
+    return "unsupported_accessor:GenericGetAttrGuardAccessor";
+  }
+
   GuardDebugInfo check_verbose_nopybind(
       PyObject* obj) override { // borrowed ref
     PyObject* x = PyObject_GenericGetAttr(obj, _attr_name); // new ref
@@ -4235,6 +4293,10 @@ class GetItemGuardAccessor : public GuardAccessor {
 
   // Do not support guard memo here: PyObject_GetItem can invoke user-defined
   // __getitem__. Specialized dict/list/tuple accessors below are memo-safe.
+  const char* guard_memo_unsupported_reason() const override {
+    return "unsupported_accessor:GetItemGuardAccessor";
+  }
+
   GuardDebugInfo check_verbose_nopybind(
       PyObject* obj) override { // borrowed ref
     PyObject* x = PyObject_GetItem(obj, _attr_name); // new ref
@@ -6722,6 +6784,17 @@ PyObject* torch_c_dynamo_guards_init() {
       .def(py::init<>())
       .def("check", &RootGuardManager::check)
       .def("check_verbose", &RootGuardManager::check_verbose)
+      .def(
+          "guard_memo_support_debug",
+          [](RootGuardManager& self, std::string source) {
+            GuardMemoSupportAnalysis analysis =
+                self.analyze_accessor_guard_memo_support(source);
+            py::dict result;
+            result["supported"] = analysis.supported;
+            result["reason"] = analysis.reason;
+            result["source"] = analysis.source;
+            return result;
+          })
       .def(
           "clone_manager",
           &RootGuardManager::clone_manager,
