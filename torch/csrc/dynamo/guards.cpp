@@ -98,6 +98,8 @@ struct GuardLookupStats {
   std::atomic<uint64_t> partial_hit{0};
   std::atomic<uint64_t> partial_miss{0};
   std::atomic<uint64_t> partial_residual_fail{0};
+  std::atomic<uint64_t> partial_unsupported{0};
+  std::atomic<uint64_t> partial_unsupported_cached{0};
 };
 
 GuardLookupStats& guard_lookup_stats() {
@@ -151,6 +153,8 @@ void reset_guard_lookup_stats() {
   store_zero(stats.partial_hit);
   store_zero(stats.partial_miss);
   store_zero(stats.partial_residual_fail);
+  store_zero(stats.partial_unsupported);
+  store_zero(stats.partial_unsupported_cached);
 }
 
 py::dict get_guard_lookup_stats() {
@@ -172,6 +176,10 @@ py::dict get_guard_lookup_stats() {
       load_relaxed(stats.partial_miss);
   result["guard_last_success_actual_partial_residual_fail"] =
       load_relaxed(stats.partial_residual_fail);
+  result["guard_last_success_actual_partial_unsupported"] =
+      load_relaxed(stats.partial_unsupported);
+  result["guard_last_success_actual_partial_unsupported_cached"] =
+      load_relaxed(stats.partial_unsupported_cached);
   return result;
 }
 
@@ -517,6 +525,7 @@ struct GuardLastSuccessReceipt {
     self_type = nullptr;
     shadow_passes = 0;
     enabled = false;
+    unsupported = false;
     stability_tokens.clear();
     hot_tokens.clear();
   }
@@ -527,6 +536,7 @@ struct GuardLastSuccessReceipt {
   PyTypeObject* self_type{nullptr};
   uint64_t shadow_passes{0};
   bool enabled{false};
+  bool unsupported{false};
   std::vector<GuardMemoToken> stability_tokens;
   std::vector<GuardMemoToken> hot_tokens;
 };
@@ -5889,6 +5899,16 @@ bool run_root_guard_manager_with_last_success_receipt(
   auto* root_mgr = static_cast<RootGuardManager*>(root);
   static const std::string self_source = "L['self']";
 
+  if (state->unsupported && state->entry_key == entry_key &&
+      state->root_key == root) {
+    if (guard_lookup_stats_enabled()) {
+      add_relaxed(guard_lookup_stats().partial_unsupported_cached, 1);
+    }
+    return run_root_guard_manager(root, f_locals);
+  } else if (state->unsupported) {
+    state->reset();
+  }
+
   if (state->enabled && state->entry_key == entry_key &&
       state->root_key == root) {
     PyObject* current_self =
@@ -5921,8 +5941,16 @@ bool run_root_guard_manager_with_last_success_receipt(
     state->reset();
   }
 
-  if (!root_mgr->supports_accessor_guard_memo_recursive(self_source)) {
+  GuardMemoSupportAnalysis support_analysis =
+      root_mgr->analyze_accessor_guard_memo_support(self_source);
+  if (!support_analysis.supported) {
     state->reset();
+    state->entry_key = entry_key;
+    state->root_key = root;
+    state->unsupported = true;
+    if (guard_lookup_stats_enabled()) {
+      add_relaxed(guard_lookup_stats().partial_unsupported, 1);
+    }
     return run_root_guard_manager(root, f_locals);
   }
 
