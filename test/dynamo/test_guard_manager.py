@@ -1181,12 +1181,20 @@ num_guards_executed=0)
                 "enable": stats["guard_last_success_actual_partial_enable"],
                 "hit": stats["guard_last_success_actual_partial_hit"],
                 "miss": stats["guard_last_success_actual_partial_miss"],
+                "unsupported": stats[
+                    "guard_last_success_actual_partial_unsupported"
+                ],
+                "unsupported_cached": stats[
+                    "guard_last_success_actual_partial_unsupported_cached"
+                ],
             }))
             """
         )
         self.assertEqual(stats["enable"], 0)
         self.assertEqual(stats["hit"], 0)
         self.assertEqual(stats["miss"], 0)
+        self.assertGreater(stats["unsupported"], 0)
+        self.assertGreater(stats["unsupported_cached"], 0)
 
     def test_guard_partial_memo_supports_stable_self_constant_guards(self):
         stats = self._run_guard_memo_child(
