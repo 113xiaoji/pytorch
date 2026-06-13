@@ -1126,6 +1126,107 @@ num_guards_executed=0)
         self.assertEqual(stats["hit"], 0)
         self.assertEqual(stats["miss"], 0)
 
+    def test_guard_partial_memo_supports_stable_self_constant_guards(self):
+        stats = self._run_guard_memo_child(
+            """
+            import json
+            import torch
+            from torch._C._dynamo import guards
+
+            class Mod(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.scale = 2
+                    self.optional = object()
+
+                def forward(self, x):
+                    if self.optional is not None:
+                        return x * self.scale
+                    return x
+
+            model = Mod()
+            opt_model = torch.compile(model, backend="eager", fullgraph=True)
+            x = torch.randn(4)
+            for _ in range(6):
+                opt_model(x)
+
+            guards.reset_guard_lookup_stats()
+            before = opt_model(x)
+            model.scale = 3
+            after = opt_model(x)
+            stats = guards.get_guard_lookup_stats()
+            print(json.dumps({
+                "before": before.tolist(),
+                "after": after.tolist(),
+                "expected_after": (x * model.scale).tolist(),
+                "hit": stats["guard_last_success_actual_partial_hit"],
+                "miss": stats["guard_last_success_actual_partial_miss"],
+                "residual_fail": stats[
+                    "guard_last_success_actual_partial_residual_fail"
+                ],
+            }))
+            """
+        )
+        self.assertGreater(stats["hit"], 0)
+        self.assertGreater(stats["miss"], 0)
+        self.assertEqual(stats["after"], stats["expected_after"])
+        self.assertNotEqual(stats["before"], stats["after"])
+        self.assertEqual(stats["residual_fail"], 0)
+
+    def test_guard_partial_memo_supports_self_module_alias_guards(self):
+        stats = self._run_guard_memo_child(
+            """
+            import json
+            import torch
+            from torch._C._dynamo import guards
+
+            class Child(torch.nn.Module):
+                def __init__(self, value):
+                    super().__init__()
+                    self.register_buffer("bias", torch.full((4,), value))
+
+                def forward(self, x):
+                    return x + self.bias
+
+            class Mod(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    child = Child(1.0)
+                    self.left = child
+                    self.right = child
+
+                def forward(self, x):
+                    return self.left(x) + self.right.bias
+
+            model = Mod()
+            opt_model = torch.compile(model, backend="eager", fullgraph=True)
+            x = torch.randn(4)
+            for _ in range(6):
+                opt_model(x)
+
+            guards.reset_guard_lookup_stats()
+            stable = opt_model(x)
+            model.right = Child(5.0)
+            changed = opt_model(x)
+            stats = guards.get_guard_lookup_stats()
+            print(json.dumps({
+                "stable": stable.tolist(),
+                "changed": changed.tolist(),
+                "expected_changed": (model.left(x) + model.right.bias).tolist(),
+                "hit": stats["guard_last_success_actual_partial_hit"],
+                "miss": stats["guard_last_success_actual_partial_miss"],
+                "residual_fail": stats[
+                    "guard_last_success_actual_partial_residual_fail"
+                ],
+            }))
+            """
+        )
+        self.assertGreater(stats["hit"], 0)
+        self.assertGreater(stats["miss"], 0)
+        self.assertEqual(stats["changed"], stats["expected_changed"])
+        self.assertNotEqual(stats["stable"], stats["changed"])
+        self.assertEqual(stats["residual_fail"], 0)
+
 
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests

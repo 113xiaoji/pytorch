@@ -1973,6 +1973,10 @@ class EQUALS_MATCH : public LeafGuard {
     return true;
   }
 
+  bool supports_guard_memo() const override {
+    return true;
+  }
+
  private:
   // value to compare against. This is py::object so that we hold on to the
   // original value and prevent garbage collection. We run EQUALS_MATCH only on
@@ -2107,6 +2111,10 @@ class NOT_NONE : public LeafGuard {
   bool check_nopybind(PyObject* value) override { // borrowed ref
     return value != Py_None;
   }
+
+  bool supports_guard_memo() const override {
+    return true;
+  }
 };
 
 class MAPPING_KEYS_MATCH : public LeafGuard {
@@ -2124,6 +2132,10 @@ class MAPPING_KEYS_MATCH : public LeafGuard {
     int result = PyObject_RichCompareBool(keys, _keys.ptr(), Py_EQ);
     Py_DECREF(keys);
     return result;
+  }
+
+  bool supports_guard_memo() const override {
+    return true;
   }
 
  private:
@@ -2318,6 +2330,10 @@ class OBJECT_ALIASING : public RelationalGuard {
     _is_first_call = true;
   }
 
+  bool supports_guard_memo() const override {
+    return true;
+  }
+
  private:
   bool _is_first_call{true};
   PyObject* _first_tensor{nullptr};
@@ -2358,6 +2374,10 @@ class NO_TENSOR_ALIASING : public RelationalGuard {
 
   void reset_state() final {
     _unique_tensors.clear();
+  }
+
+  bool supports_guard_memo() const override {
+    return true;
   }
 
  private:
