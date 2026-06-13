@@ -89,3 +89,25 @@ As an example, the commands to run first line of the dashboard (performance only
 ./benchmarks/dynamo/timm_models.py --performance --training --amp --backend=inductor --output=timm_models_training.csv
 ./benchmarks/dynamo/timm_models.py --performance --inference --bfloat16 --backend=inductor --output=timm_models_inference.csv
 ```
+
+## Guard Memo Microbenchmark
+
+`microbenchmarks/guard_memo_benchmark.py` measures the TorchDynamo guard
+last-success memo path without depending on external model suites.
+
+Example:
+
+```
+python benchmarks/dynamo/microbenchmarks/guard_memo_benchmark.py \
+  --iters 1000 --warmup 10 --repeats 5
+```
+
+The benchmark runs two small cases:
+
+- `stable-tree`: a stable `nn.Module` tree where the partial memo path can hit.
+- `unsupported-property`: a property accessor where the memo path must stay
+  disabled and reuse the unsupported cache.
+
+The summary table reports average call and lookup time, plus partial memo
+counters such as `partial_hit`, `partial_miss`, and
+`partial_unsupported_cached`.
