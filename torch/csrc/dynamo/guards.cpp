@@ -31,8 +31,10 @@
 
 #include <chrono>
 #include <atomic>
+#include <mutex>
 #include <sstream>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 
 // Certain CPython data structures are defined in `.c` files in earlier Python
@@ -100,10 +102,48 @@ struct GuardLookupStats {
   std::atomic<uint64_t> partial_residual_fail{0};
   std::atomic<uint64_t> partial_unsupported{0};
   std::atomic<uint64_t> partial_unsupported_cached{0};
+  std::atomic<uint64_t> fastplan_candidate{0};
+  std::atomic<uint64_t> fastplan_shadow_pass{0};
+  std::atomic<uint64_t> fastplan_enable{0};
+  std::atomic<uint64_t> fastplan_hit{0};
+  std::atomic<uint64_t> fastplan_miss{0};
+  std::atomic<uint64_t> fastplan_disabled{0};
+  std::atomic<uint64_t> fastplan_token_count_sum{0};
+  std::atomic<uint64_t> fastplan_token_check_ns{0};
+  std::atomic<uint64_t> fastplan_slow_check_ns{0};
+  std::atomic<uint64_t> fastplan_token_cap_disabled{0};
+};
+
+enum class GuardFastPlanCandidateKind : uint8_t {
+  None,
+  TopModules,
+  NestedModules,
+};
+
+struct GuardFastPlanDisabledPathStats {
+  uint64_t count{0};
+  std::string reason;
 };
 
 GuardLookupStats& guard_lookup_stats() {
   static GuardLookupStats stats;
+  return stats;
+}
+
+std::mutex& guard_fastplan_disabled_stats_mutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::unordered_map<std::string, uint64_t>&
+guard_fastplan_disabled_reason_stats() {
+  static std::unordered_map<std::string, uint64_t> stats;
+  return stats;
+}
+
+std::unordered_map<std::string, GuardFastPlanDisabledPathStats>&
+guard_fastplan_disabled_path_stats() {
+  static std::unordered_map<std::string, GuardFastPlanDisabledPathStats> stats;
   return stats;
 }
 
@@ -155,6 +195,21 @@ void reset_guard_lookup_stats() {
   store_zero(stats.partial_residual_fail);
   store_zero(stats.partial_unsupported);
   store_zero(stats.partial_unsupported_cached);
+  store_zero(stats.fastplan_candidate);
+  store_zero(stats.fastplan_shadow_pass);
+  store_zero(stats.fastplan_enable);
+  store_zero(stats.fastplan_hit);
+  store_zero(stats.fastplan_miss);
+  store_zero(stats.fastplan_disabled);
+  store_zero(stats.fastplan_token_count_sum);
+  store_zero(stats.fastplan_token_check_ns);
+  store_zero(stats.fastplan_slow_check_ns);
+  store_zero(stats.fastplan_token_cap_disabled);
+  {
+    std::lock_guard<std::mutex> lock(guard_fastplan_disabled_stats_mutex());
+    guard_fastplan_disabled_reason_stats().clear();
+    guard_fastplan_disabled_path_stats().clear();
+  }
 }
 
 py::dict get_guard_lookup_stats() {
@@ -180,6 +235,38 @@ py::dict get_guard_lookup_stats() {
       load_relaxed(stats.partial_unsupported);
   result["guard_last_success_actual_partial_unsupported_cached"] =
       load_relaxed(stats.partial_unsupported_cached);
+  result["guard_fastplan_enabled"] = guard_fast_plan_enabled();
+  result["guard_fastplan_candidate"] = load_relaxed(stats.fastplan_candidate);
+  result["guard_fastplan_shadow_pass"] =
+      load_relaxed(stats.fastplan_shadow_pass);
+  result["guard_fastplan_enable"] = load_relaxed(stats.fastplan_enable);
+  result["guard_fastplan_hit"] = load_relaxed(stats.fastplan_hit);
+  result["guard_fastplan_miss"] = load_relaxed(stats.fastplan_miss);
+  result["guard_fastplan_disabled"] = load_relaxed(stats.fastplan_disabled);
+  result["guard_fastplan_token_count_sum"] =
+      load_relaxed(stats.fastplan_token_count_sum);
+  result["guard_fastplan_token_check_ns"] =
+      load_relaxed(stats.fastplan_token_check_ns);
+  result["guard_fastplan_slow_check_ns"] =
+      load_relaxed(stats.fastplan_slow_check_ns);
+  result["guard_fastplan_token_cap_disabled"] =
+      load_relaxed(stats.fastplan_token_cap_disabled);
+  py::dict fastplan_disabled_reasons;
+  py::dict fastplan_disabled_top_paths;
+  {
+    std::lock_guard<std::mutex> lock(guard_fastplan_disabled_stats_mutex());
+    for (const auto& item : guard_fastplan_disabled_reason_stats()) {
+      fastplan_disabled_reasons[py::str(item.first)] = item.second;
+    }
+    for (const auto& item : guard_fastplan_disabled_path_stats()) {
+      py::dict path_stats;
+      path_stats["count"] = item.second.count;
+      path_stats["reason"] = item.second.reason;
+      fastplan_disabled_top_paths[py::str(item.first)] = path_stats;
+    }
+  }
+  result["guard_fastplan_disabled_reasons"] = fastplan_disabled_reasons;
+  result["guard_fastplan_disabled_top_paths"] = fastplan_disabled_top_paths;
   return result;
 }
 
@@ -418,6 +505,114 @@ struct GuardMemoSupportAnalysis {
   }
 };
 
+constexpr uint64_t kGuardFastPlanStablePasses = 3;
+constexpr size_t kGuardFastPlanMaxTokens = 1024;
+
+struct GuardFastPlanMemoState {
+  bool enabled{false};
+  bool disabled{false};
+  uint64_t shadow_passes{0};
+  std::vector<GuardMemoToken> tokens;
+};
+
+GuardFastPlanCandidateKind compute_guard_fastplan_candidate_kind(
+    const std::string& source) {
+  static constexpr const char* self_modules = "L['self']._modules";
+  if (source.rfind("L['self']", 0) != 0) {
+    return GuardFastPlanCandidateKind::None;
+  }
+  if (source == self_modules) {
+    return GuardFastPlanCandidateKind::TopModules;
+  }
+  static constexpr const char* modules_suffix = "._modules";
+  static constexpr size_t modules_suffix_len = 9;
+  if (source.size() >= modules_suffix_len &&
+      source.compare(
+          source.size() - modules_suffix_len,
+          modules_suffix_len,
+          modules_suffix) == 0 &&
+      source.rfind(self_modules, 0) == 0) {
+    return GuardFastPlanCandidateKind::NestedModules;
+  }
+  return GuardFastPlanCandidateKind::None;
+}
+
+void record_guard_fastplan_candidate() {
+  if (!guard_lookup_stats_enabled()) {
+    return;
+  }
+  add_relaxed(guard_lookup_stats().fastplan_candidate, 1);
+}
+
+void record_guard_fastplan_shadow_pass(
+    size_t token_count,
+    uint64_t slow_check_ns) {
+  if (!guard_lookup_stats_enabled()) {
+    return;
+  }
+  auto& stats = guard_lookup_stats();
+  add_relaxed(stats.fastplan_shadow_pass, 1);
+  add_relaxed(stats.fastplan_token_count_sum, token_count);
+  add_relaxed(stats.fastplan_slow_check_ns, slow_check_ns);
+}
+
+void record_guard_fastplan_enable() {
+  if (!guard_lookup_stats_enabled()) {
+    return;
+  }
+  add_relaxed(guard_lookup_stats().fastplan_enable, 1);
+}
+
+void record_guard_fastplan_hit(size_t token_count, uint64_t token_check_ns) {
+  if (!guard_lookup_stats_enabled()) {
+    return;
+  }
+  auto& stats = guard_lookup_stats();
+  add_relaxed(stats.fastplan_hit, 1);
+  add_relaxed(stats.fastplan_token_count_sum, token_count);
+  add_relaxed(stats.fastplan_token_check_ns, token_check_ns);
+}
+
+void record_guard_fastplan_miss(
+    size_t token_count,
+    uint64_t token_check_ns,
+    uint64_t slow_check_ns) {
+  if (!guard_lookup_stats_enabled()) {
+    return;
+  }
+  auto& stats = guard_lookup_stats();
+  add_relaxed(stats.fastplan_miss, 1);
+  add_relaxed(stats.fastplan_token_count_sum, token_count);
+  add_relaxed(stats.fastplan_token_check_ns, token_check_ns);
+  add_relaxed(stats.fastplan_slow_check_ns, slow_check_ns);
+}
+
+void record_guard_fastplan_disabled(const GuardMemoSupportAnalysis& analysis) {
+  if (!guard_lookup_stats_enabled()) {
+    return;
+  }
+  add_relaxed(guard_lookup_stats().fastplan_disabled, 1);
+  if (analysis.reason.empty()) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(guard_fastplan_disabled_stats_mutex());
+  guard_fastplan_disabled_reason_stats()[analysis.reason] += 1;
+  if (!analysis.source.empty()) {
+    auto& path_stats = guard_fastplan_disabled_path_stats()[analysis.source];
+    path_stats.count += 1;
+    if (path_stats.reason.empty()) {
+      path_stats.reason = analysis.reason;
+    }
+  }
+}
+
+void record_guard_fastplan_token_cap_disabled() {
+  if (!guard_lookup_stats_enabled()) {
+    return;
+  }
+  add_relaxed(guard_lookup_stats().fastplan_token_cap_disabled, 1);
+}
+
 void guard_memo_record_tensor_strides(
     GuardMemoToken& token,
     const at::Tensor& tensor) {
@@ -516,6 +711,8 @@ PyObject* guard_memo_self_key() {
 }
 
 } // namespace
+
+const LocalState* guard_fastplan_root_local_state(RootGuardManager* root);
 
 struct GuardLastSuccessReceipt {
   void reset() {
@@ -1929,6 +2126,10 @@ class LAMBDA_GUARD : public LeafGuard {
     return GuardDebugInfo(false, verbose_code_parts(), 0);
   }
 
+  const char* guard_memo_unsupported_reason() const override {
+    return "unsupported_leaf:LAMBDA_GUARD";
+  }
+
  private:
   // The user provided lambda function for check_fn.
   py::function _guard_check_fn;
@@ -2791,7 +2992,11 @@ class GuardManager {
  public:
   GuardManager() = delete;
   GuardManager(RootGuardManager* root, std::string source)
-      : _root(root), _source(std::move(source)), _is_dict(false) {}
+      : _root(root),
+        _source(std::move(source)),
+        _is_dict(false),
+        _fastplan_candidate_kind(
+            compute_guard_fastplan_candidate_kind(_source)) {}
 
   GuardManager(
       RootGuardManager* root,
@@ -2799,7 +3004,9 @@ class GuardManager {
       py::handle example_value)
       : _root(root),
         _source(std::move(source)),
-        _is_dict(py::isinstance<py::dict>(example_value)) {
+        _is_dict(py::isinstance<py::dict>(example_value)),
+        _fastplan_candidate_kind(
+            compute_guard_fastplan_candidate_kind(_source)) {
     if (_is_dict) {
       _dict_tag = get_dict_version_unchecked(example_value.ptr());
     }
@@ -2824,7 +3031,11 @@ class GuardManager {
  public:
   // For cloning
   GuardManager(RootGuardManager* root, std::string source, bool is_dict)
-      : _root(root), _source(std::move(source)), _is_dict(is_dict) {}
+      : _root(root),
+        _source(std::move(source)),
+        _is_dict(is_dict),
+        _fastplan_candidate_kind(
+            compute_guard_fastplan_candidate_kind(_source)) {}
 
   void clone_common(
       RootGuardManager* cloned_root,
@@ -2921,7 +3132,98 @@ class GuardManager {
     return this->check_accessors_nopybind(value, skip_accessor_source);
   }
 
+  bool is_guard_fastplan_candidate() const {
+    return _fastplan_candidate_kind != GuardFastPlanCandidateKind::None;
+  }
+
+  bool check_nopybind_with_fastplan(PyObject* value) {
+    if (!guard_fast_plan_enabled() || active_guard_memo_tokens != nullptr ||
+        _fastplan_memo.disabled || !is_guard_fastplan_candidate()) {
+      return check_nopybind_template(value);
+    }
+
+    record_guard_fastplan_candidate();
+    if (_fastplan_memo.tokens.empty()) {
+      GuardMemoSupportAnalysis analysis;
+      if (!analyze_guard_memo_support_recursive(analysis)) {
+        _fastplan_memo.disabled = true;
+        record_guard_fastplan_disabled(analysis);
+        return check_nopybind_template(value);
+      }
+    }
+
+    const LocalState* local_state = guard_fastplan_root_local_state(_root);
+    if (_fastplan_memo.enabled) {
+      const bool collect_stats = guard_lookup_stats_enabled();
+      const uint64_t token_start_ns =
+          collect_stats ? guard_lookup_time_ns() : 0;
+      const bool token_match =
+          guard_memo_tokens_match_current(_fastplan_memo.tokens, local_state);
+      const uint64_t token_check_ns =
+          collect_stats ? guard_lookup_time_ns() - token_start_ns : 0;
+
+      if (token_match) {
+        record_guard_fastplan_hit(
+            _fastplan_memo.tokens.size(), token_check_ns);
+        return true;
+      }
+
+      _fastplan_memo.disabled = true;
+      _fastplan_memo.enabled = false;
+      const uint64_t slow_start_ns =
+          collect_stats ? guard_lookup_time_ns() : 0;
+      const bool result = check_nopybind_template(value);
+      const uint64_t slow_check_ns =
+          collect_stats ? guard_lookup_time_ns() - slow_start_ns : 0;
+      record_guard_fastplan_miss(
+          _fastplan_memo.tokens.size(), token_check_ns, slow_check_ns);
+      return result;
+    }
+
+    std::vector<GuardMemoToken> tokens;
+    const bool collect_stats = guard_lookup_stats_enabled();
+    const uint64_t slow_start_ns = collect_stats ? guard_lookup_time_ns() : 0;
+    GuardMemoRecorderScope recorder(&tokens, nullptr, local_state);
+    const bool result = check_nopybind_template(value);
+    const uint64_t slow_check_ns =
+        collect_stats ? guard_lookup_time_ns() - slow_start_ns : 0;
+
+    if (!result) {
+      _fastplan_memo.shadow_passes = 0;
+      _fastplan_memo.tokens.clear();
+      return false;
+    }
+
+    if (tokens.size() > kGuardFastPlanMaxTokens) {
+      _fastplan_memo.disabled = true;
+      _fastplan_memo.shadow_passes = 0;
+      _fastplan_memo.tokens.clear();
+      record_guard_fastplan_token_cap_disabled();
+      return true;
+    }
+
+    if (!_fastplan_memo.tokens.empty() &&
+        guard_memo_token_vectors_match(tokens, _fastplan_memo.tokens)) {
+      _fastplan_memo.shadow_passes += 1;
+    } else {
+      _fastplan_memo.tokens = std::move(tokens);
+      _fastplan_memo.shadow_passes = 1;
+    }
+
+    record_guard_fastplan_shadow_pass(
+        _fastplan_memo.tokens.size(), slow_check_ns);
+    if (_fastplan_memo.shadow_passes >= kGuardFastPlanStablePasses) {
+      _fastplan_memo.enabled = true;
+      record_guard_fastplan_enable();
+    }
+    return true;
+  }
+
   virtual bool check_nopybind(PyObject* value) {
+    if (guard_fast_plan_enabled() && active_guard_memo_tokens == nullptr &&
+        is_guard_fastplan_candidate()) {
+      return check_nopybind_with_fastplan(value);
+    }
     return check_nopybind_template(value);
   }
 
@@ -3210,6 +3512,9 @@ class GuardManager {
 
   bool _is_dict;
   uint64_t _dict_tag{0};
+  GuardFastPlanCandidateKind _fastplan_candidate_kind{
+      GuardFastPlanCandidateKind::None};
+  GuardFastPlanMemoState _fastplan_memo;
 };
 
 GuardAccessor::GuardAccessor(
@@ -3486,6 +3791,10 @@ class RootGuardManager : public GuardManager {
   // TENSOR_MATCH guard init.
   bool _init_local_state = false;
 };
+
+const LocalState* guard_fastplan_root_local_state(RootGuardManager* root) {
+  return root == nullptr ? nullptr : &root->_local_state;
+}
 
 /*
  * Dicts are common in python code. Therefore, we handle guards for dicts

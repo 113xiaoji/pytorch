@@ -589,6 +589,184 @@ num_guards_executed=0)
         )
         self.assertEqual(support["source"], "L['self'].value")
 
+    def test_guard_fastplan_records_hits_for_supported_modules_subtree(self):
+        stats = self._run_guard_memo_child(
+            """
+            import json
+            from torch._C._dynamo import guards
+
+            class Child:
+                pass
+
+            class Mod:
+                pass
+
+            child = Child()
+            model = Mod()
+            model._modules = {"child": child}
+
+            root = guards.RootGuardManager()
+            self_mgr = root.framelocals_manager(
+                ("self", 0), "L['self']", model, guards.GuardManagerType.GUARD_MANAGER
+            )
+            dict_mgr = self_mgr.get_generic_dict_manager(
+                "L['self'].__dict__", model.__dict__, guards.GuardManagerType.GUARD_MANAGER
+            )
+            modules_mgr = dict_mgr.dict_getitem_manager(
+                "_modules",
+                "L['self']._modules",
+                model._modules,
+                guards.GuardManagerType.GUARD_MANAGER,
+            )
+            modules_mgr.add_dict_length_check_guard(1, ["len(_modules) == 1"])
+            child_mgr = modules_mgr.dict_getitem_manager(
+                "child",
+                "L['self']._modules['child']",
+                child,
+                guards.GuardManagerType.GUARD_MANAGER,
+            )
+            child_mgr.add_id_match_guard(id(child), ["child is original"])
+
+            f_locals = {"self": model}
+            guards.reset_guard_lookup_stats()
+            results = [root.check(f_locals) for _ in range(8)]
+            stats = guards.get_guard_lookup_stats()
+            print(json.dumps({
+                "results": results,
+                "enabled": stats["guard_fastplan_enabled"],
+                "candidate": stats["guard_fastplan_candidate"],
+                "shadow_pass": stats["guard_fastplan_shadow_pass"],
+                "enable": stats["guard_fastplan_enable"],
+                "hit": stats["guard_fastplan_hit"],
+                "miss": stats["guard_fastplan_miss"],
+                "disabled": stats["guard_fastplan_disabled"],
+                "token_count_sum": stats["guard_fastplan_token_count_sum"],
+            }))
+            """
+        )
+        self.assertTrue(all(stats["results"]))
+        self.assertTrue(stats["enabled"])
+        self.assertGreater(stats["candidate"], 0)
+        self.assertGreater(stats["shadow_pass"], 0)
+        self.assertGreater(stats["enable"], 0)
+        self.assertGreater(stats["hit"], 0)
+        self.assertEqual(stats["miss"], 0)
+        self.assertEqual(stats["disabled"], 0)
+        self.assertGreater(stats["token_count_sum"], 0)
+
+    def test_guard_fastplan_miss_falls_back_to_slow_guard(self):
+        stats = self._run_guard_memo_child(
+            """
+            import json
+            from torch._C._dynamo import guards
+
+            class Child:
+                pass
+
+            class Mod:
+                pass
+
+            child = Child()
+            model = Mod()
+            model._modules = {"child": child}
+
+            root = guards.RootGuardManager()
+            self_mgr = root.framelocals_manager(
+                ("self", 0), "L['self']", model, guards.GuardManagerType.GUARD_MANAGER
+            )
+            dict_mgr = self_mgr.get_generic_dict_manager(
+                "L['self'].__dict__", model.__dict__, guards.GuardManagerType.GUARD_MANAGER
+            )
+            modules_mgr = dict_mgr.dict_getitem_manager(
+                "_modules",
+                "L['self']._modules",
+                model._modules,
+                guards.GuardManagerType.GUARD_MANAGER,
+            )
+            child_mgr = modules_mgr.dict_getitem_manager(
+                "child",
+                "L['self']._modules['child']",
+                child,
+                guards.GuardManagerType.GUARD_MANAGER,
+            )
+            child_mgr.add_id_match_guard(id(child), ["child is original"])
+
+            f_locals = {"self": model}
+            for _ in range(6):
+                assert root.check(f_locals)
+
+            guards.reset_guard_lookup_stats()
+            stable = root.check(f_locals)
+            model._modules["child"] = Child()
+            changed = root.check(f_locals)
+            stats = guards.get_guard_lookup_stats()
+            print(json.dumps({
+                "stable": stable,
+                "changed": changed,
+                "hit": stats["guard_fastplan_hit"],
+                "miss": stats["guard_fastplan_miss"],
+            }))
+            """
+        )
+        self.assertTrue(stats["stable"])
+        self.assertFalse(stats["changed"])
+        self.assertGreater(stats["hit"], 0)
+        self.assertGreater(stats["miss"], 0)
+
+    def test_guard_fastplan_records_disabled_reasons(self):
+        stats = self._run_guard_memo_child(
+            """
+            import json
+            from torch._C._dynamo import guards
+
+            class Mod:
+                pass
+
+            model = Mod()
+            model._modules = {"value": 1}
+
+            root = guards.RootGuardManager()
+            self_mgr = root.framelocals_manager(
+                ("self", 0), "L['self']", model, guards.GuardManagerType.GUARD_MANAGER
+            )
+            dict_mgr = self_mgr.get_generic_dict_manager(
+                "L['self'].__dict__", model.__dict__, guards.GuardManagerType.GUARD_MANAGER
+            )
+            modules_mgr = dict_mgr.dict_getitem_manager(
+                "_modules",
+                "L['self']._modules",
+                model._modules,
+                guards.GuardManagerType.GUARD_MANAGER,
+            )
+            value_mgr = modules_mgr.dict_getitem_manager(
+                "value",
+                "L['self']._modules['value']",
+                1,
+                guards.GuardManagerType.GUARD_MANAGER,
+            )
+            value_mgr.add_lambda_guard(lambda value: value == 1, ["value == 1"])
+
+            guards.reset_guard_lookup_stats()
+            f_locals = {"self": model}
+            for _ in range(4):
+                assert root.check(f_locals)
+            stats = guards.get_guard_lookup_stats()
+            print(json.dumps({
+                "disabled": stats["guard_fastplan_disabled"],
+                "disabled_reasons": stats["guard_fastplan_disabled_reasons"],
+                "disabled_top_paths": stats["guard_fastplan_disabled_top_paths"],
+            }))
+            """
+        )
+        self.assertGreater(stats["disabled"], 0)
+        self.assertIn("unsupported_leaf:LAMBDA_GUARD", stats["disabled_reasons"])
+        self.assertTrue(
+            any(
+                path.startswith("L['self']._modules")
+                for path in stats["disabled_top_paths"]
+            )
+        )
+
     def test_framelocals_guard_e2e(self):
         def fn(x, y, z):
             return x + y + z[0]
