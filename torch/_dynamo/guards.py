@@ -27,9 +27,12 @@ import enum
 import functools
 import importlib
 import inspect
+import json
 import logging
 import math
+import os
 import sys
+import tempfile
 import textwrap
 import types
 import warnings
@@ -176,6 +179,43 @@ recompiles_verbose_log = torch._logging.getArtifactLogger(
 verbose_guards_log = torch._logging.getArtifactLogger(__name__, "verbose_guards")
 
 
+_recursive_dict_tags_finalize_diag = {
+    "finalize_called": 0,
+    "find_tag_safe_roots_called": 0,
+    "tag_safe_root_count_total": 0,
+    "tag_safe_root_sources": [],
+    "last_verdict": "not_run",
+}
+
+
+def _recursive_dict_tags_diag_enabled() -> bool:
+    return os.environ.get("TORCHDYNAMO_RDT_DIAG", "1") != "0"
+
+
+def _recursive_dict_tags_diag_path(kind: str) -> str:
+    diag_dir = os.environ.get("TORCHDYNAMO_RDT_DIAG_DIR", tempfile.gettempdir())
+    return os.path.join(
+        diag_dir, f"torch_dynamo_recursive_dict_tags_{kind}_{os.getpid()}"
+    )
+
+
+def _write_recursive_dict_tags_finalize_diag(record: dict[str, object]) -> None:
+    if not _recursive_dict_tags_diag_enabled():
+        return
+    try:
+        jsonl_path = _recursive_dict_tags_diag_path("finalize") + ".jsonl"
+        with open(jsonl_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, sort_keys=True) + "\n")
+
+        summary_path = _recursive_dict_tags_diag_path("finalize_summary") + ".json"
+        with open(summary_path, "w", encoding="utf-8") as f:
+            json.dump(_recursive_dict_tags_finalize_diag, f, indent=2, sort_keys=True)
+            f.write("\n")
+    except Exception:
+        # Diagnostics must never affect guard construction.
+        log.debug("failed to write recursive dict tags finalize diagnostics", exc_info=True)
+
+
 class GuardManagerWrapper:
     """
     A helper class that contains the root guard manager. An instance of this
@@ -264,11 +304,45 @@ class GuardManagerWrapper:
         return self.diff_guard_sources
 
     def finalize(self):
-        if config.use_recursive_dict_tags_for_guards and justknobs_check(
-            "pytorch/compiler:use_recursive_dict_tags_for_guards"
-        ):
-            self.find_tag_safe_roots()
+        config_enabled = bool(config.use_recursive_dict_tags_for_guards)
+        justknob_enabled = bool(
+            justknobs_check("pytorch/compiler:use_recursive_dict_tags_for_guards")
+        )
+        tag_safe_roots = []
+        if config_enabled and justknob_enabled:
+            tag_safe_roots = self.find_tag_safe_roots()
         self.prepare_diff_guard_manager()
+
+        if not config_enabled:
+            verdict = "config_disabled"
+        elif not justknob_enabled:
+            verdict = "justknob_disabled"
+        elif not tag_safe_roots:
+            verdict = "no_tag_safe_roots"
+        else:
+            verdict = "tag_safe_roots_marked"
+
+        root_sources = [node.get_source() for node in tag_safe_roots]
+        _recursive_dict_tags_finalize_diag["finalize_called"] += 1
+        if config_enabled and justknob_enabled:
+            _recursive_dict_tags_finalize_diag["find_tag_safe_roots_called"] += 1
+        _recursive_dict_tags_finalize_diag["tag_safe_root_count_total"] += len(
+            tag_safe_roots
+        )
+        _recursive_dict_tags_finalize_diag["tag_safe_root_sources"].extend(
+            root_sources
+        )
+        _recursive_dict_tags_finalize_diag["last_verdict"] = verdict
+        _write_recursive_dict_tags_finalize_diag(
+            {
+                "event": "finalize",
+                "config_enabled": config_enabled,
+                "justknob_enabled": justknob_enabled,
+                "tag_safe_root_count": len(tag_safe_roots),
+                "tag_safe_root_sources": root_sources,
+                "verdict": verdict,
+            }
+        )
 
     def prepare_diff_guard_manager(self):
         self.collect_diff_guard_sources()
@@ -424,6 +498,7 @@ class GuardManagerWrapper:
         for node in tag_safe_roots:
             if node.is_guarded_value_nn_module():
                 node.mark_tag_safe_root()
+        return tag_safe_roots
 
     def populate_diff_guard_manager(self):
         self.diff_guard_root = self.clone_with_chosen_sources(self.diff_guard_sources)

@@ -29,12 +29,23 @@
 #include <ATen/xpu/EmptyTensor.h>
 #endif
 
+#include <algorithm>
 #include <atomic>
-#include <unordered_set>
+#include <cstdlib>
 #include <chrono>
+#include <fstream>
+#include <mutex>
 #include <sstream>
 #include <tuple>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
+
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 // Certain CPython data structures are defined in `.c` files in earlier Python
 // versions, e.g., for TupleIteratorGetItemAccessor, we need a fast way to
@@ -84,6 +95,211 @@ namespace torch::dynamo {
     return;                                 \
   }                                         \
   self.insert_leaf_guard(name);
+
+namespace {
+
+bool recursive_dict_tags_diag_enabled() {
+  const char* env = std::getenv("TORCHDYNAMO_RDT_DIAG");
+  return env == nullptr || std::string(env) != "0";
+}
+
+std::string recursive_dict_tags_diag_dir() {
+  if (const char* env = std::getenv("TORCHDYNAMO_RDT_DIAG_DIR")) {
+    return env;
+  }
+#ifdef _WIN32
+  if (const char* env = std::getenv("TEMP")) {
+    return env;
+  }
+  return ".";
+#else
+  return "/tmp";
+#endif
+}
+
+int recursive_dict_tags_pid() {
+#ifdef _WIN32
+  return _getpid();
+#else
+  return getpid();
+#endif
+}
+
+std::string recursive_dict_tags_json_escape(const std::string& value) {
+  std::ostringstream out;
+  for (char c : value) {
+    switch (c) {
+      case '\\':
+        out << "\\\\";
+        break;
+      case '"':
+        out << "\\\"";
+        break;
+      case '\n':
+        out << "\\n";
+        break;
+      case '\r':
+        out << "\\r";
+        break;
+      case '\t':
+        out << "\\t";
+        break;
+      default:
+        out << c;
+        break;
+    }
+  }
+  return out.str();
+}
+
+class RecursiveDictTagsRuntimeDiag {
+ public:
+  ~RecursiveDictTagsRuntimeDiag() {
+    if (!recursive_dict_tags_diag_enabled()) {
+      return;
+    }
+    std::lock_guard<std::mutex> guard(mutex_);
+    write_summary();
+  }
+
+  void record(
+      const char* event,
+      const std::string& source,
+      const char* reason = "",
+      size_t saved_value_count = 0,
+      size_t saved_dict_count = 0,
+      size_t saved_tensor_metadata_count = 0) {
+    if (!recursive_dict_tags_diag_enabled()) {
+      return;
+    }
+    std::lock_guard<std::mutex> guard(mutex_);
+    uint64_t event_count = ++counters_[event];
+    total_events_ += 1;
+    last_event_ = event;
+    last_source_ = source;
+    last_reason_ = reason;
+    max_saved_value_count_ = std::max(max_saved_value_count_, saved_value_count);
+    max_saved_dict_count_ = std::max(max_saved_dict_count_, saved_dict_count);
+    max_saved_tensor_metadata_count_ =
+        std::max(max_saved_tensor_metadata_count_, saved_tensor_metadata_count);
+    if (jsonl_events_written_ < kMaxJsonlEvents) {
+      write_jsonl(event, source, reason, saved_value_count, saved_dict_count,
+                  saved_tensor_metadata_count);
+      jsonl_events_written_ += 1;
+    }
+    if (event_count == 1 || std::string(event) == "disabled" ||
+        std::string(event) == "fast_hit") {
+      write_summary();
+    }
+  }
+
+ private:
+  std::string path_prefix() {
+    return recursive_dict_tags_diag_dir() +
+        "/torch_dynamo_recursive_dict_tags_runtime_" +
+        std::to_string(recursive_dict_tags_pid());
+  }
+
+  std::string verdict() {
+    if (counters_["fast_hit"] > 0) {
+      return "fast_hit_observed";
+    }
+    if (counters_["pointer_cap_exceeded"] > 0) {
+      return "pointer_cap_exceeded";
+    }
+    if (counters_["disabled"] > 0 && counters_["fast_hit"] == 0) {
+      return "disabled_before_hit";
+    }
+    if (counters_["record_start"] > 0 && counters_["record_success"] == 0) {
+      return "recording_failed";
+    }
+    if (counters_["record_success"] > 0 && counters_["fast_check"] > 0) {
+      return "fast_miss_after_record";
+    }
+    if (counters_["record_success"] > 0) {
+      return "recorded_waiting_for_next_value";
+    }
+    if (counters_["tag_safe_root_seen"] > 0) {
+      return "tag_safe_root_seen_without_record";
+    }
+    return "runtime_not_reached_or_no_tag_safe_root";
+  }
+
+  void write_jsonl(
+      const char* event,
+      const std::string& source,
+      const char* reason,
+      size_t saved_value_count,
+      size_t saved_dict_count,
+      size_t saved_tensor_metadata_count) {
+    std::ofstream f(path_prefix() + ".jsonl", std::ios::app);
+    if (!f) {
+      return;
+    }
+    f << "{\"event\":\"" << event << "\",\"source\":\""
+      << recursive_dict_tags_json_escape(source) << "\",\"reason\":\""
+      << recursive_dict_tags_json_escape(reason)
+      << "\",\"saved_value_count\":" << saved_value_count
+      << ",\"saved_dict_count\":" << saved_dict_count
+      << ",\"saved_tensor_metadata_count\":" << saved_tensor_metadata_count
+      << "}\n";
+  }
+
+  void write_summary() {
+    std::ofstream f(path_prefix() + "_summary.json", std::ios::trunc);
+    if (!f) {
+      return;
+    }
+    f << "{\n";
+    f << "  \"verdict\": \"" << verdict() << "\",\n";
+    f << "  \"last_event\": \"" << recursive_dict_tags_json_escape(last_event_)
+      << "\",\n";
+    f << "  \"last_source\": \"" << recursive_dict_tags_json_escape(last_source_)
+      << "\",\n";
+    f << "  \"last_reason\": \"" << recursive_dict_tags_json_escape(last_reason_)
+      << "\",\n";
+    f << "  \"max_saved_value_count\": " << max_saved_value_count_ << ",\n";
+    f << "  \"max_saved_dict_count\": " << max_saved_dict_count_ << ",\n";
+    f << "  \"max_saved_tensor_metadata_count\": "
+      << max_saved_tensor_metadata_count_ << ",\n";
+    f << "  \"total_events\": " << total_events_ << ",\n";
+    f << "  \"jsonl_events_written\": " << jsonl_events_written_ << ",\n";
+    f << "  \"counters\": {";
+    bool first = true;
+    for (const auto& kv : counters_) {
+      if (!first) {
+        f << ",";
+      }
+      first = false;
+      f << "\n    \"" << recursive_dict_tags_json_escape(kv.first)
+        << "\": " << kv.second;
+    }
+    if (!counters_.empty()) {
+      f << "\n  ";
+    }
+    f << "}\n";
+    f << "}\n";
+  }
+
+  std::mutex mutex_;
+  std::unordered_map<std::string, uint64_t> counters_;
+  std::string last_event_;
+  std::string last_source_;
+  std::string last_reason_;
+  size_t max_saved_value_count_ = 0;
+  size_t max_saved_dict_count_ = 0;
+  size_t max_saved_tensor_metadata_count_ = 0;
+  uint64_t total_events_ = 0;
+  uint64_t jsonl_events_written_ = 0;
+  static constexpr uint64_t kMaxJsonlEvents = 200;
+};
+
+RecursiveDictTagsRuntimeDiag& recursive_dict_tags_runtime_diag() {
+  static RecursiveDictTagsRuntimeDiag diag;
+  return diag;
+}
+
+} // namespace
 
 TensorCheck::TensorCheck(
     const LocalState& state,
@@ -2840,26 +3056,88 @@ class GuardManager {
     // Cross-thread callbacks may also set this flag; we still only ever
     // transition false -> true, so the next check_nopybind will catch it.
     if (_is_tag_safe_root) {
+      recursive_dict_tags_runtime_diag().record(
+          "tag_safe_root_seen", _source, "", _dict_pointers.size());
       cleanup_dict_pointers_if_invalidated();
     }
     if (!_disable_dict_tag_matching.load()) {
       if (_is_tag_safe_root) {
         // Check if the `value` object was recorded earlier
-        if (_dict_pointers.find(value) != _dict_pointers.end()) {
+        auto dict_pointers_it = _dict_pointers.find(value);
+        if (dict_pointers_it != _dict_pointers.end()) {
+          const auto tensor_metadata_it = _tensor_metadata_pointers.find(value);
+          const size_t saved_tensor_metadata_count =
+              tensor_metadata_it == _tensor_metadata_pointers.end()
+              ? 0
+              : tensor_metadata_it->second.size();
+          recursive_dict_tags_runtime_diag().record(
+              "fast_check",
+              _source,
+              "",
+              _dict_pointers.size(),
+              dict_pointers_it->second.size(),
+              saved_tensor_metadata_count);
           // Check for fast path
           // if (is_weakref_valid(value) && check_dict_pointer_tags(value)) {
-          if (check_dict_pointer_tags(value) &&
-              check_tensor_metadata_fast(value)) {
-            if (check_no_tensor_aliasing_guards_fast(value)) {
-              return true;
-            } else {
-              _disable_dict_tag_matching.store(true);
-              return false;
-            }
+          if (!check_dict_pointer_tags(value)) {
+            recursive_dict_tags_runtime_diag().record(
+                "fast_miss_dict_tag",
+                _source,
+                "dict_tag_mismatch",
+                _dict_pointers.size(),
+                dict_pointers_it->second.size(),
+                saved_tensor_metadata_count);
+            _disable_dict_tag_matching.store(true);
+            recursive_dict_tags_runtime_diag().record(
+                "disabled",
+                _source,
+                "dict_tag_mismatch",
+                _dict_pointers.size(),
+                dict_pointers_it->second.size(),
+                saved_tensor_metadata_count);
+          } else if (!check_tensor_metadata_fast(value)) {
+            recursive_dict_tags_runtime_diag().record(
+                "fast_miss_tensor_metadata",
+                _source,
+                "tensor_metadata_mismatch",
+                _dict_pointers.size(),
+                dict_pointers_it->second.size(),
+                saved_tensor_metadata_count);
+            _disable_dict_tag_matching.store(true);
+            recursive_dict_tags_runtime_diag().record(
+                "disabled",
+                _source,
+                "tensor_metadata_mismatch",
+                _dict_pointers.size(),
+                dict_pointers_it->second.size(),
+                saved_tensor_metadata_count);
+          } else if (!check_no_tensor_aliasing_guards_fast(value)) {
+            recursive_dict_tags_runtime_diag().record(
+                "fast_miss_tensor_aliasing",
+                _source,
+                "tensor_aliasing_mismatch",
+                _dict_pointers.size(),
+                dict_pointers_it->second.size(),
+                saved_tensor_metadata_count);
+            _disable_dict_tag_matching.store(true);
+            recursive_dict_tags_runtime_diag().record(
+                "disabled",
+                _source,
+                "tensor_aliasing_mismatch",
+                _dict_pointers.size(),
+                dict_pointers_it->second.size(),
+                saved_tensor_metadata_count);
+            return false;
+          } else {
+            recursive_dict_tags_runtime_diag().record(
+                "fast_hit",
+                _source,
+                "",
+                _dict_pointers.size(),
+                dict_pointers_it->second.size(),
+                saved_tensor_metadata_count);
+            return true;
           }
-          // Something changed, very likely the dict tag checking will fail in
-          // future. So disable the recursive tag matching.
-          _disable_dict_tag_matching.store(true);
         } else if (
             _dict_pointers.size() ==
             _max_saved_pointers_for_recursive_dict_tags_check) {
@@ -2867,23 +3145,44 @@ class GuardManager {
           // be recorded, it is a sign that dict tag matching will never
           // succeed.
           _disable_dict_tag_matching.store(true);
+          recursive_dict_tags_runtime_diag().record(
+              "pointer_cap_exceeded",
+              _source,
+              "max_saved_pointers",
+              _dict_pointers.size());
+          recursive_dict_tags_runtime_diag().record(
+              "disabled",
+              _source,
+              "max_saved_pointers",
+              _dict_pointers.size());
         } else {
           // Start the recording
           start_recording_dict_pointers(_root, this);
           is_recording = true;
+          recursive_dict_tags_runtime_diag().record(
+              "record_start", _source, "", _dict_pointers.size());
         }
       } else if (_is_tag_safe && is_recording_dict_pointers(_root)) {
         // This is a tag safe node, record the dict pointer
         if (_is_dict) {
           record_dict_pointer(_root, value);
+          recursive_dict_tags_runtime_diag().record(
+              "record_dict_pointer", _source);
         } else if (_is_tensor && _has_no_tensor_aliasing_guard) {
           record_tensor_pointer(_root, value);
+          recursive_dict_tags_runtime_diag().record(
+              "record_tensor_pointer", _source);
         }
         // Tensor metadata can mutate in-place without changing dict tags.
         if (_is_immutable && THPVariable_Check(value)) {
           record_tensor_metadata(_root, value);
+          recursive_dict_tags_runtime_diag().record(
+              "record_tensor_metadata", _source);
         }
       }
+    } else if (_is_tag_safe_root) {
+      recursive_dict_tags_runtime_diag().record(
+          "disabled_at_entry", _source, "already_disabled", _dict_pointers.size());
     }
 
     bool result = check_nopybind_template(value);
@@ -2891,8 +3190,32 @@ class GuardManager {
     if (is_recording) {
       stop_recording_dict_pointers(_root, value, result);
       if (result) {
+        auto dict_pointers_it = _dict_pointers.find(value);
+        const size_t saved_dict_count =
+            dict_pointers_it == _dict_pointers.end()
+            ? 0
+            : dict_pointers_it->second.size();
+        const auto tensor_metadata_it = _tensor_metadata_pointers.find(value);
+        const size_t saved_tensor_metadata_count =
+            tensor_metadata_it == _tensor_metadata_pointers.end()
+            ? 0
+            : tensor_metadata_it->second.size();
+        recursive_dict_tags_runtime_diag().record(
+            "record_success",
+            _source,
+            "",
+            _dict_pointers.size(),
+            saved_dict_count,
+            saved_tensor_metadata_count);
         if (!register_weakref_callback(value)) {
           // something bad happened, disable the dict tag optimization
+          recursive_dict_tags_runtime_diag().record(
+              "weakref_registration_failed",
+              _source,
+              "weakref_registration_failed",
+              _dict_pointers.size(),
+              saved_dict_count,
+              saved_tensor_metadata_count);
           throw std::runtime_error(
               "Could not register a callback for recursive dict tag optimization");
         }
@@ -2901,10 +3224,20 @@ class GuardManager {
         // But it does not hurt to be more cautious
         _dict_callback_installed = watch_dict_pointers(value);
 #endif
+      } else {
+        recursive_dict_tags_runtime_diag().record(
+            "record_fail", _source, "slow_guard_failed", _dict_pointers.size());
       }
     }
     if (!result) {
       _disable_dict_tag_matching.store(true);
+      if (_is_tag_safe_root) {
+        recursive_dict_tags_runtime_diag().record(
+            "disabled",
+            _source,
+            "slow_guard_failed",
+            _dict_pointers.size());
+      }
     }
     return result;
   }
