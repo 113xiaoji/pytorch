@@ -184,8 +184,18 @@ _recursive_dict_tags_finalize_diag = {
     "find_tag_safe_roots_called": 0,
     "tag_safe_root_count_total": 0,
     "tag_safe_root_sources": [],
+    "reject_reason_counts": {},
+    "reject_record_source_filters": [],
+    "reject_records": [],
+    "reject_records_filtered_out": 0,
     "last_verdict": "not_run",
 }
+
+_DEFAULT_RECURSIVE_DICT_TAG_REJECT_SOURCE_FILTERS = (
+    "L['self']._modules['seq_module']",
+    "L['self']._modules['ins_trans']",
+    "L['self']._modules['mix_transformer']",
+)
 
 
 def _recursive_dict_tags_diag_enabled() -> bool:
@@ -196,6 +206,40 @@ def _recursive_dict_tags_diag_path(kind: str) -> str:
     diag_dir = os.environ.get("TORCHDYNAMO_RDT_DIAG_DIR", tempfile.gettempdir())
     return os.path.join(
         diag_dir, f"torch_dynamo_recursive_dict_tags_{kind}_{os.getpid()}"
+    )
+
+
+def _recursive_dict_tags_diag_max_reject_records() -> int:
+    try:
+        return max(0, int(os.environ.get("TORCHDYNAMO_RDT_DIAG_MAX_REJECTS", "2000")))
+    except ValueError:
+        return 2000
+
+
+def _recursive_dict_tags_diag_reject_source_filters() -> list[str]:
+    raw_filters = os.environ.get("TORCHDYNAMO_RDT_DIAG_REJECT_SOURCE_FILTERS")
+    if raw_filters is None:
+        return list(_DEFAULT_RECURSIVE_DICT_TAG_REJECT_SOURCE_FILTERS)
+
+    raw_filters = raw_filters.strip()
+    if raw_filters in ("", "*", "all", "ALL"):
+        return []
+
+    for separator in ("\n", ","):
+        raw_filters = raw_filters.replace(separator, ";")
+    return [item.strip() for item in raw_filters.split(";") if item.strip()]
+
+
+def _recursive_dict_tags_source_matches_filter(
+    source: str, source_filters: list[str]
+) -> bool:
+    if not source_filters:
+        return True
+    return any(
+        source == source_filter
+        or source.startswith(source_filter + ".")
+        or source.startswith(source_filter + "[")
+        for source_filter in source_filters
     )
 
 
@@ -245,6 +289,10 @@ class GuardManagerWrapper:
         self.print_no_tensor_aliasing_guard = True
 
         self.diff_guard_sources: OrderedSet[str] = OrderedSet()
+        self._recursive_dict_tags_last_reject_reason_counts: dict[str, int] = {}
+        self._recursive_dict_tags_last_reject_records: list[dict[str, object]] = []
+        self._recursive_dict_tags_last_reject_records_filtered_out = 0
+        self._recursive_dict_tags_last_reject_record_source_filters: list[str] = []
 
     @contextmanager
     def _preserve_print_no_tensor_aliasing_flag(self):
@@ -326,11 +374,38 @@ class GuardManagerWrapper:
         _recursive_dict_tags_finalize_diag["finalize_called"] += 1
         if config_enabled and justknob_enabled:
             _recursive_dict_tags_finalize_diag["find_tag_safe_roots_called"] += 1
+        reject_reason_counts = self._recursive_dict_tags_last_reject_reason_counts
+        reject_records = self._recursive_dict_tags_last_reject_records
+        reject_records_filtered_out = (
+            self._recursive_dict_tags_last_reject_records_filtered_out
+        )
+        reject_record_source_filters = (
+            self._recursive_dict_tags_last_reject_record_source_filters
+        )
         _recursive_dict_tags_finalize_diag["tag_safe_root_count_total"] += len(
             tag_safe_roots
         )
         _recursive_dict_tags_finalize_diag["tag_safe_root_sources"].extend(
             root_sources
+        )
+        summary_reject_counts = _recursive_dict_tags_finalize_diag[
+            "reject_reason_counts"
+        ]
+        assert isinstance(summary_reject_counts, dict)
+        for reason, count in reject_reason_counts.items():
+            summary_reject_counts[reason] = summary_reject_counts.get(reason, 0) + count
+        summary_reject_records = _recursive_dict_tags_finalize_diag["reject_records"]
+        assert isinstance(summary_reject_records, list)
+        max_reject_records = _recursive_dict_tags_diag_max_reject_records()
+        if len(summary_reject_records) < max_reject_records:
+            summary_reject_records.extend(
+                reject_records[: max_reject_records - len(summary_reject_records)]
+            )
+        _recursive_dict_tags_finalize_diag[
+            "reject_record_source_filters"
+        ] = reject_record_source_filters
+        _recursive_dict_tags_finalize_diag["reject_records_filtered_out"] += (
+            reject_records_filtered_out
         )
         _recursive_dict_tags_finalize_diag["last_verdict"] = verdict
         _write_recursive_dict_tags_finalize_diag(
@@ -340,6 +415,10 @@ class GuardManagerWrapper:
                 "justknob_enabled": justknob_enabled,
                 "tag_safe_root_count": len(tag_safe_roots),
                 "tag_safe_root_sources": root_sources,
+                "reject_reason_counts": reject_reason_counts,
+                "reject_record_source_filters": reject_record_source_filters,
+                "reject_records": reject_records,
+                "reject_records_filtered_out": reject_records_filtered_out,
                 "verdict": verdict,
             }
         )
@@ -411,6 +490,75 @@ class GuardManagerWrapper:
         subset that are tag safe roots.
         """
 
+        reject_reason_counts: collections.Counter[str] = collections.Counter()
+        reject_records: list[dict[str, object]] = []
+        reject_records_filtered_out = 0
+        max_reject_records = _recursive_dict_tags_diag_max_reject_records()
+        reject_record_source_filters = (
+            _recursive_dict_tags_diag_reject_source_filters()
+        )
+
+        def node_source(node):
+            try:
+                return node.get_source()
+            except Exception:
+                return "<unknown>"
+
+        def type_names(values):
+            return [type(value).__name__ for value in values]
+
+        def guarded_value_kind(node):
+            if isinstance(node, DictGuardManager):
+                return "dict_manager"
+            if node.is_guarded_value_nn_module():
+                return "nn_module"
+            if node.is_guarded_value_tensor():
+                return "tensor"
+            if node.is_guarded_value_dict():
+                return "dict"
+            if node.is_guarded_value_immutable():
+                return "immutable"
+            return "other"
+
+        def child_summary(child_mgr):
+            if child_mgr is None:
+                return None
+            return {
+                "source": node_source(child_mgr),
+                "guarded_value_kind": guarded_value_kind(child_mgr),
+                "is_tag_safe": child_mgr.is_tag_safe(),
+                "is_tag_safe_root": child_mgr.is_tag_safe_root(),
+                "has_unoptimized_relational_guard": child_mgr.has_unoptimized_relational_guard(),
+                "has_object_aliasing_guard": child_mgr.has_object_aliasing_guard(),
+                "accessor_types": type_names(child_mgr.get_accessors()),
+                "leaf_guard_types": type_names(child_mgr.get_leaf_guards()),
+            }
+
+        def record_reject(node, reason, detail=None):
+            nonlocal reject_records_filtered_out
+            reject_reason_counts[reason] += 1
+            source = node_source(node)
+            if not _recursive_dict_tags_source_matches_filter(
+                source, reject_record_source_filters
+            ):
+                reject_records_filtered_out += 1
+                return
+            if len(reject_records) >= max_reject_records:
+                return
+            record = {
+                "source": source,
+                "reason": reason,
+                "guarded_value_kind": guarded_value_kind(node),
+                "is_tag_safe": node.is_tag_safe(),
+                "has_unoptimized_relational_guard": node.has_unoptimized_relational_guard(),
+                "has_object_aliasing_guard": node.has_object_aliasing_guard(),
+                "accessor_types": type_names(node.get_accessors()),
+                "leaf_guard_types": type_names(node.get_leaf_guards()),
+            }
+            if detail is not None:
+                record["detail"] = detail
+            reject_records.append(record)
+
         def visit_dict_manager(node):
             # Just recurse through the key and value dict managers and check if
             # all of them are tag safe nodes.
@@ -437,8 +585,33 @@ class GuardManagerWrapper:
                 if val_mgr:
                     is_subtree_tag_safe &= val_mgr.is_tag_safe()
 
-            if is_subtree_tag_safe and not node.has_unoptimized_relational_guard():
+            has_unoptimized_relational_guard = node.has_unoptimized_relational_guard()
+            if is_subtree_tag_safe and not has_unoptimized_relational_guard:
                 node.mark_tag_safe()
+            else:
+                if has_unoptimized_relational_guard:
+                    if node.has_object_aliasing_guard():
+                        record_reject(node, "dict_object_aliasing_guard")
+                    else:
+                        record_reject(node, "dict_unoptimized_relational_guard")
+                if not is_subtree_tag_safe:
+                    blocked_children = []
+                    for idx, (key_mgr, val_mgr) in sorted(
+                        node.get_key_value_managers().items()
+                    ):
+                        if key_mgr is not None and not key_mgr.is_tag_safe():
+                            blocked_children.append(
+                                {"index": idx, "role": "key", **child_summary(key_mgr)}
+                            )
+                        if val_mgr is not None and not val_mgr.is_tag_safe():
+                            blocked_children.append(
+                                {"index": idx, "role": "value", **child_summary(val_mgr)}
+                            )
+                    record_reject(
+                        node,
+                        "dict_child_not_tag_safe",
+                        {"blocked_children": blocked_children[:8]},
+                    )
             return tag_safe_roots
 
         def visit_manager(node):
@@ -450,6 +623,10 @@ class GuardManagerWrapper:
                 tag_safe_roots.extend(visit(child_mgr))
 
             if node.has_unoptimized_relational_guard():
+                if node.has_object_aliasing_guard():
+                    record_reject(node, "object_aliasing_guard")
+                else:
+                    record_reject(node, "unoptimized_relational_guard")
                 return tag_safe_roots
 
             if node.is_guarded_value_immutable():
@@ -457,8 +634,25 @@ class GuardManagerWrapper:
                 # are no accessors. Presence of accessors means presence of
                 # symbolic shape guards.
                 if node.is_guarded_value_tensor():
-                    if node.has_no_accessors() and not node.has_object_aliasing_guard():
+                    has_no_accessors = node.has_no_accessors()
+                    has_object_aliasing_guard = node.has_object_aliasing_guard()
+                    if has_no_accessors and not has_object_aliasing_guard:
                         node.mark_tag_safe()
+                    else:
+                        if not has_no_accessors:
+                            record_reject(
+                                node,
+                                "tensor_has_accessor_or_symbolic_shape_guard",
+                                {
+                                    "accessor_types": type_names(node.get_accessors()),
+                                    "child_managers": [
+                                        child_summary(child_mgr)
+                                        for child_mgr in node.get_child_managers()
+                                    ],
+                                },
+                            )
+                        if has_object_aliasing_guard:
+                            record_reject(node, "tensor_object_aliasing_guard")
                 else:
                     node.mark_tag_safe()
             elif node.is_guarded_value_dict():
@@ -470,6 +664,44 @@ class GuardManagerWrapper:
                 )
                 if is_subtree_tag_safe:
                     node.mark_tag_safe()
+                else:
+                    blocked_children = []
+                    for idx, (accessor, mgr) in enumerate(zip(accessors, child_mgrs)):
+                        accessor_ok = isinstance(accessor, DictGetItemGuardAccessor)
+                        child_ok = mgr.is_tag_safe()
+                        if not accessor_ok or not child_ok:
+                            blocked_children.append(
+                                {
+                                    "index": idx,
+                                    "accessor_type": type(accessor).__name__,
+                                    "accessor_is_dict_getitem": accessor_ok,
+                                    "child": child_summary(mgr),
+                                }
+                            )
+                    if len(accessors) != len(child_mgrs):
+                        record_reject(
+                            node,
+                            "dict_accessor_child_count_mismatch",
+                            {
+                                "accessor_count": len(accessors),
+                                "child_manager_count": len(child_mgrs),
+                            },
+                        )
+                    if any(
+                        not isinstance(accessor, DictGetItemGuardAccessor)
+                        for accessor in accessors
+                    ):
+                        record_reject(
+                            node,
+                            "dict_accessor_not_dict_getitem",
+                            {"blocked_children": blocked_children[:8]},
+                        )
+                    if any(not mgr.is_tag_safe() for mgr in child_mgrs):
+                        record_reject(
+                            node,
+                            "dict_child_not_tag_safe",
+                            {"blocked_children": blocked_children[:8]},
+                        )
             elif node.is_guarded_value_nn_module():
                 accessors = node.get_accessors()
                 child_mgrs = node.get_child_managers()
@@ -485,6 +717,45 @@ class GuardManagerWrapper:
                     return [
                         node,
                     ]
+                blocked_children = []
+                for idx, (accessor, mgr) in enumerate(zip(accessors, child_mgrs)):
+                    accessor_ok = isinstance(accessor, GetGenericDictGuardAccessor)
+                    child_ok = mgr.is_tag_safe()
+                    if not accessor_ok or not child_ok:
+                        blocked_children.append(
+                            {
+                                "index": idx,
+                                "accessor_type": type(accessor).__name__,
+                                "accessor_is_generic_dict": accessor_ok,
+                                "child": child_summary(mgr),
+                            }
+                        )
+                if len(accessors) != len(child_mgrs):
+                    record_reject(
+                        node,
+                        "nn_module_accessor_child_count_mismatch",
+                        {
+                            "accessor_count": len(accessors),
+                            "child_manager_count": len(child_mgrs),
+                        },
+                    )
+                if any(
+                    not isinstance(accessor, GetGenericDictGuardAccessor)
+                    for accessor in accessors
+                ):
+                    record_reject(
+                        node,
+                        "nn_module_accessor_not_generic_dict",
+                        {"blocked_children": blocked_children[:8]},
+                    )
+                if any(not mgr.is_tag_safe() for mgr in child_mgrs):
+                    record_reject(
+                        node,
+                        "nn_module_child_not_tag_safe",
+                        {"blocked_children": blocked_children[:8]},
+                    )
+            else:
+                record_reject(node, "unsupported_guarded_value_kind")
             return tag_safe_roots
 
         def visit(node):
@@ -498,6 +769,16 @@ class GuardManagerWrapper:
         for node in tag_safe_roots:
             if node.is_guarded_value_nn_module():
                 node.mark_tag_safe_root()
+        self._recursive_dict_tags_last_reject_reason_counts = dict(
+            reject_reason_counts
+        )
+        self._recursive_dict_tags_last_reject_records = reject_records
+        self._recursive_dict_tags_last_reject_records_filtered_out = (
+            reject_records_filtered_out
+        )
+        self._recursive_dict_tags_last_reject_record_source_filters = (
+            reject_record_source_filters
+        )
         return tag_safe_roots
 
     def populate_diff_guard_manager(self):
