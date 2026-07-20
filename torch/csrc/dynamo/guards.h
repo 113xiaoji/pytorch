@@ -4,8 +4,6 @@
 #include <torch/csrc/python_headers.h>
 #include <torch/csrc/utils/pybind.h>
 
-#include <cstdint>
-
 namespace torch::dynamo {
 
 PyObject* torch_c_dynamo_guards_init();
@@ -21,27 +19,6 @@ bool run_root_guard_manager_with_last_success_receipt(
     FrameLocalsMapping* f_locals,
     bool is_skip_guard_eval_unsafe);
 
-bool guard_lookup_stats_enabled();
-bool unsafe_mock_guard_bypass_enabled();
-uint64_t guard_lookup_time_ns();
-void reset_guard_lookup_stats(bool force_enable = false);
-py::dict get_guard_lookup_stats();
-void record_guard_lookup_stats(
-    uint64_t total_ns,
-    uint64_t backend_match_ns,
-    uint64_t slow_guard_ns,
-    uint64_t move_to_front_ns,
-    uint64_t cache_entry_count,
-    uint64_t cache_entry_hit_index);
-void record_root_guard_stats(
-    uint64_t total_ns,
-    uint64_t lock_ns,
-    uint64_t local_state_ns,
-    uint64_t leaf_ns,
-    uint64_t accessor_ns,
-    uint64_t epilogue_ns,
-    uint64_t tls_ns);
-void record_unsafe_mock_guard_bypass_stats(uint64_t cache_entry_hit_index);
 void* create_guard_last_success_receipt();
 void destroy_guard_last_success_receipt(void* receipt);
 void reset_guard_last_success_receipt(void* receipt);
