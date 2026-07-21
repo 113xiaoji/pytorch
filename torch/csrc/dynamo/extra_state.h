@@ -66,10 +66,11 @@ typedef struct VISIBILITY_HIDDEN ExtraState {
   py::dict frame_state;
   // Actions to apply to all frames with this code object
   FrameExecStrategy strategy{DEFAULT, DEFAULT};
-  // Opaque receipt backing the last-success actual-partial guard plan.
-  void* last_success_receipt{nullptr};
-
   ExtraState(PyCodeObject* orig_code_arg);
+  ExtraState(const ExtraState&) = delete;
+  ExtraState(ExtraState&&) = delete;
+  ExtraState& operator=(const ExtraState&) = delete;
+  ExtraState& operator=(ExtraState&&) = delete;
   ~ExtraState();
   CacheEntry* get_first_entry();
   void move_to_front(CacheEntry* cache_entry);

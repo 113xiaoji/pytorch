@@ -1464,6 +1464,52 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             check=True,
         )
 
+    def test_actual_partial_plan_is_per_cache_entry(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            GLOBAL_DICT = {"used": 1, "noise": [0]}
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.mode = 1
+
+                def forward(self, x):
+                    return x + self.mode + GLOBAL_DICT["used"]
+
+            model = Model()
+            counter = CompileCounter()
+            compiled = torch.compile(
+                model, backend=counter, fullgraph=True, dynamic=False
+            )
+            inputs = (torch.zeros(2), torch.zeros(3))
+            for i in range(8):
+                GLOBAL_DICT["noise"] = [i]
+                for x in inputs:
+                    torch.testing.assert_close(
+                        compiled(x), torch.full_like(x, 2.0)
+                    )
+            assert counter.frame_count == 2, counter.frame_count
+
+            model.mode = 5
+            for i, x in enumerate(inputs):
+                GLOBAL_DICT["noise"] = [100 + i]
+                torch.testing.assert_close(
+                    compiled(x), torch.full_like(x, 6.0)
+                )
+            assert counter.frame_count == 4, counter.frame_count
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
 
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests
