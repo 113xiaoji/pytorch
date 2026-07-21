@@ -1510,6 +1510,65 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             check=True,
         )
 
+    def test_actual_partial_preserves_cross_slice_alias_relations(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            GLOBAL_DICT = {"used": 1, "noise": [0]}
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.register_buffer("value", torch.ones(2))
+
+                def forward(self, x):
+                    return self.value + x + GLOBAL_DICT["used"]
+
+            aliased_model = Model()
+            aliased_counter = CompileCounter()
+            aliased = torch.compile(
+                aliased_model, backend=aliased_counter, fullgraph=True
+            )
+            same = aliased_model.value
+            for i in range(8):
+                GLOBAL_DICT["noise"] = [i]
+                torch.testing.assert_close(aliased(same), torch.full((2,), 3.0))
+            assert aliased_counter.frame_count == 1, aliased_counter.frame_count
+
+            GLOBAL_DICT["noise"] = [100]
+            different = torch.zeros_like(same)
+            torch.testing.assert_close(aliased(different), torch.full((2,), 2.0))
+            assert aliased_counter.frame_count == 2, aliased_counter.frame_count
+
+            distinct_model = Model()
+            distinct_counter = CompileCounter()
+            distinct = torch.compile(
+                distinct_model, backend=distinct_counter, fullgraph=True
+            )
+            for i in range(8):
+                GLOBAL_DICT["noise"] = [i + 200]
+                current = torch.full((2,), float(i + 2))
+                torch.testing.assert_close(
+                    distinct(current), distinct_model.value + current + 1
+                )
+            assert distinct_counter.frame_count == 1, distinct_counter.frame_count
+
+            GLOBAL_DICT["noise"] = [300]
+            torch.testing.assert_close(
+                distinct(distinct_model.value), torch.full((2,), 3.0)
+            )
+            assert distinct_counter.frame_count == 2, distinct_counter.frame_count
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
 
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests
