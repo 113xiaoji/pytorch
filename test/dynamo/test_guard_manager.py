@@ -1401,6 +1401,16 @@ class RecursiveDictGuardTests(RecursiveDictTagTests):
 
 
 class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
+    def run_fast_plan_script(self, script):
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
     def test_actual_partial_preserves_module_and_residual_guards(self):
         script = """
             import torch
@@ -1455,14 +1465,194 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             torch.testing.assert_close(compiled_alias(a, a), alias_sensitive(a, a))
             torch.testing.assert_close(compiled_alias(a, b), alias_sensitive(a, b))
         """
-        env = os.environ.copy()
-        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(script)],
-            cwd=os.getcwd(),
-            env=env,
-            check=True,
-        )
+        self.run_fast_plan_script(script)
+
+    def test_actual_partial_preserves_cross_slice_alias_relations(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            GLOBAL_DICT = {"used": 1, "noise": [0]}
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.register_buffer("value", torch.ones(2))
+
+                def forward(self, x):
+                    return self.value + x + GLOBAL_DICT["used"]
+
+            aliased_model = Model()
+            aliased_counter = CompileCounter()
+            aliased = torch.compile(
+                aliased_model, backend=aliased_counter, fullgraph=True
+            )
+            same = aliased_model.value
+            for i in range(8):
+                GLOBAL_DICT["noise"] = [i]
+                torch.testing.assert_close(aliased(same), torch.full((2,), 3.0))
+            assert aliased_counter.frame_count == 1, aliased_counter.frame_count
+
+            GLOBAL_DICT["noise"] = [100]
+            different = torch.zeros_like(same)
+            torch.testing.assert_close(aliased(different), torch.full((2,), 2.0))
+            assert aliased_counter.frame_count == 2, aliased_counter.frame_count
+
+            distinct_model = Model()
+            distinct_counter = CompileCounter()
+            distinct = torch.compile(
+                distinct_model, backend=distinct_counter, fullgraph=True
+            )
+            for i in range(8):
+                GLOBAL_DICT["noise"] = [i + 200]
+                current = torch.full((2,), float(i + 2))
+                torch.testing.assert_close(
+                    distinct(current), distinct_model.value + current + 1
+                )
+            assert distinct_counter.frame_count == 1, distinct_counter.frame_count
+
+            GLOBAL_DICT["noise"] = [300]
+            torch.testing.assert_close(
+                distinct(distinct_model.value), torch.full((2,), 3.0)
+            )
+            assert distinct_counter.frame_count == 2, distinct_counter.frame_count
+        """
+        self.run_fast_plan_script(script)
+
+    def test_actual_partial_preserves_tensor_no_hasattr_guard(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            GLOBAL_DICT = {"used": 1, "noise": [0]}
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self._cached_tensor = torch.ones(2)
+
+                def forward(self, x):
+                    return self._cached_tensor + x + GLOBAL_DICT["used"]
+
+            model = Model()
+            counter = CompileCounter()
+            compiled = torch.compile(
+                model, backend=counter, fullgraph=True, dynamic=True
+            )
+            x = torch.zeros(2)
+            for i in range(8):
+                GLOBAL_DICT["noise"] = [i]
+                torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+            assert counter.frame_count == 1, counter.frame_count
+
+            model._cached_tensor._dynamo_dynamic_indices = set()
+            GLOBAL_DICT["noise"] = [100]
+            torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+            assert counter.frame_count == 2, counter.frame_count
+        """
+        self.run_fast_plan_script(script)
+
+    def test_actual_partial_rejects_ordinary_no_hasattr(self):
+        script = """
+            import torch
+
+            GLOBAL_DICT = {"used": 1, "noise": [0]}
+
+            class Model(torch.nn.Module):
+                def forward(self, x):
+                    if hasattr(self, "scale"):
+                        return x + self.scale + GLOBAL_DICT["used"]
+                    return x + 1 + GLOBAL_DICT["used"]
+
+            model = Model()
+            compiled = torch.compile(model, backend="eager", fullgraph=True)
+            x = torch.zeros(2)
+            for i in range(8):
+                GLOBAL_DICT["noise"] = [i]
+                torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+
+            model.scale = torch.full((2,), 5.0)
+            GLOBAL_DICT["noise"] = [100]
+            torch.testing.assert_close(compiled(x), torch.full((2,), 6.0))
+        """
+        self.run_fast_plan_script(script)
+
+    def test_actual_partial_misses_on_data_descriptor_install(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            GLOBAL_DICT = {"used": 1, "noise": [0]}
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.scale = torch.ones(2)
+
+                def forward(self, x):
+                    return self.scale + x + GLOBAL_DICT["used"]
+
+            class ScaleDescriptor:
+                def __get__(self, obj, owner):
+                    return torch.full((2,), 5.0)
+
+                def __set__(self, obj, value):
+                    obj.__dict__["scale"] = value
+
+            model = Model()
+            counter = CompileCounter()
+            compiled = torch.compile(model, backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            for i in range(8):
+                GLOBAL_DICT["noise"] = [i]
+                torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+            assert counter.frame_count == 1, counter.frame_count
+
+            Model.scale = ScaleDescriptor()
+            GLOBAL_DICT["noise"] = [100]
+            torch.testing.assert_close(compiled(x), torch.full((2,), 6.0))
+            assert counter.frame_count == 2, counter.frame_count
+        """
+        self.run_fast_plan_script(script)
+
+    def test_actual_partial_plan_is_per_cache_entry(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            GLOBAL_DICT = {"used": 1, "noise": [0]}
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.mode = 1
+
+                def forward(self, x):
+                    return x + self.mode + GLOBAL_DICT["used"]
+
+            model = Model()
+            counter = CompileCounter()
+            compiled = torch.compile(
+                model, backend=counter, fullgraph=True, dynamic=False
+            )
+            inputs = (torch.zeros(2), torch.zeros(3))
+            for i in range(8):
+                GLOBAL_DICT["noise"] = [i]
+                for x in inputs:
+                    torch.testing.assert_close(
+                        compiled(x), torch.full_like(x, 2.0)
+                    )
+            assert counter.frame_count == 2, counter.frame_count
+
+            model.mode = 5
+            for i, x in enumerate(inputs):
+                GLOBAL_DICT["noise"] = [100 + i]
+                torch.testing.assert_close(
+                    compiled(x), torch.full_like(x, 6.0)
+                )
+            assert counter.frame_count == 4, counter.frame_count
+        """
+        self.run_fast_plan_script(script)
 
 
 if __name__ == "__main__":
