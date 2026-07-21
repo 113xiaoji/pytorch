@@ -148,6 +148,7 @@ enum class GuardSubtreeProbeTokenKind : uint8_t {
   ObjectAliasing,
   BoundMethod,
   FrameGlobals,
+  TensorNoHasAttr,
 };
 
 constexpr size_t kGuardLastSuccessActualMaxTokens = 65536;
@@ -1030,6 +1031,42 @@ static bool is_global_source_path(const std::string& source) {
        (source[1] == '[' || source[1] == '.'));
 }
 
+static bool guard_subtree_type_version_is_valid(PyTypeObject* type) {
+#if PY_VERSION_HEX >= 0x030D0000
+  return type != nullptr && type->tp_version_tag != 0;
+#else
+  return type != nullptr &&
+      PyType_HasFeature(type, Py_TPFLAGS_VALID_VERSION_TAG) &&
+      type->tp_version_tag != 0;
+#endif
+}
+
+static bool guard_subtree_ensure_type_version(
+    PyTypeObject* type,
+    PyObject* lookup_key) {
+  if (type == nullptr || lookup_key == nullptr) {
+    return false;
+  }
+  (void)_PyType_Lookup(type, lookup_key);
+#if PY_VERSION_HEX >= 0x030C0000
+  if (PyUnstable_Type_AssignVersionTag(type) == 0) {
+    return false;
+  }
+#endif
+  return guard_subtree_type_version_is_valid(type);
+}
+
+struct GuardSubtreeTypeProof {
+  py::object type;
+  unsigned int version{0};
+
+  bool matches_current() const {
+    auto* current_type = reinterpret_cast<PyTypeObject*>(type.ptr());
+    return guard_subtree_type_version_is_valid(current_type) &&
+        current_type->tp_version_tag == version;
+  }
+};
+
 enum class GuardCrossSliceRelationKind : uint8_t {
   ObjectAliasing,
   NoTensorAliasing,
@@ -1071,6 +1108,7 @@ struct GuardSubtreeEntryToken {
   PyCFunction bound_c_method_func{nullptr};
   PyTypeObject* bound_c_method_class{nullptr};
   int bound_c_method_flags{0};
+  PyObject* no_hasattr_key{nullptr};
 
   static GuardSubtreeEntryToken make(PyObject* obj) {
     GuardSubtreeEntryToken token;
@@ -1225,6 +1263,17 @@ struct GuardSubtreeEntryToken {
     return token;
   }
 
+  static GuardSubtreeEntryToken make_tensor_no_hasattr(
+      PyObject* obj,
+      PyObject* key) {
+    GuardSubtreeEntryToken token;
+    token.object = obj;
+    token.type = Py_TYPE(obj);
+    token.kind = GuardSubtreeProbeTokenKind::TensorNoHasAttr;
+    token.no_hasattr_key = key;
+    return token;
+  }
+
   bool matches_tensor_current(const LocalState* state) const {
     if (state == nullptr) {
       return false;
@@ -1325,6 +1374,9 @@ struct GuardSubtreeEntryToken {
     if (kind == GuardSubtreeProbeTokenKind::ObjectAliasing) {
       return object_aliasing_guard == other.object_aliasing_guard;
     }
+    if (kind == GuardSubtreeProbeTokenKind::TensorNoHasAttr) {
+      return no_hasattr_key == other.no_hasattr_key;
+    }
     return version == other.version && size == other.size &&
         list_items == other.list_items;
   }
@@ -1411,11 +1463,32 @@ static bool guard_last_success_make_partial_hot_tokens(
   return true;
 }
 
-extern thread_local const LocalState* active_guard_local_state;
-
 static bool guard_subtree_tensor_token_matches_current(
+    const GuardSubtreeEntryToken& token,
+    const LocalState* local_state) {
+  return token.matches_tensor_current(local_state);
+}
+
+static bool guard_subtree_tensor_no_hasattr_token_matches_current(
     const GuardSubtreeEntryToken& token) {
-  return token.matches_tensor_current(active_guard_local_state);
+  if (token.object == nullptr || token.no_hasattr_key == nullptr ||
+      Py_TYPE(token.object) != token.type ||
+      !THPVariable_CheckExact(token.object)) {
+    return false;
+  }
+  PyObject** dictptr = _PyObject_GetDictPtr(token.object);
+  if (dictptr == nullptr || *dictptr == nullptr) {
+    return true;
+  }
+  if (!PyDict_CheckExact(*dictptr)) {
+    return false;
+  }
+  const int contains = PyDict_Contains(*dictptr, token.no_hasattr_key);
+  if (contains < 0) {
+    PyErr_Clear();
+    return false;
+  }
+  return contains == 0;
 }
 
 static bool guard_subtree_special_token_matches_current(
@@ -1562,6 +1635,26 @@ static bool guard_last_success_build_relation_plans(
   return true;
 }
 
+static bool guard_last_success_add_type_proof(
+    PyTypeObject* type,
+    PyObject* lookup_key,
+    std::unordered_set<PyTypeObject*>& seen,
+    std::vector<GuardSubtreeTypeProof>& proofs) {
+  if (!seen.insert(type).second) {
+    return true;
+  }
+  if (!guard_subtree_ensure_type_version(type, lookup_key)) {
+    PyErr_Clear();
+    return false;
+  }
+  GuardSubtreeTypeProof proof;
+  proof.type = py::reinterpret_borrow<py::object>(
+      reinterpret_cast<PyObject*>(type));
+  proof.version = type->tp_version_tag;
+  proofs.push_back(std::move(proof));
+  return true;
+}
+
 static void guard_last_success_retain_token_objects(
     const std::vector<GuardSubtreeEntryToken>& partial_tokens,
     std::vector<py::object>& retained_token_objects) {
@@ -1595,6 +1688,7 @@ static bool guard_last_success_build_partial_plan_tokens(
     const std::vector<GuardSubtreeEntryToken>& partial_tokens,
     std::vector<GuardSubtreeEntryToken>& stability_tokens,
     std::vector<GuardSubtreeEntryToken>& hot_tokens,
+    std::vector<GuardSubtreeTypeProof>& type_proofs,
     std::vector<GuardCrossSliceRelationPlan>& relation_plans,
     std::vector<py::object>& retained_token_objects) {
   stability_tokens = partial_tokens;
@@ -1614,6 +1708,19 @@ static bool guard_last_success_build_partial_plan_tokens(
             return guard_subtree_token_is_aliasing_guard(token.kind);
           }),
       hot_tokens.end());
+
+  type_proofs.clear();
+  std::unordered_set<PyTypeObject*> seen_types;
+  for (const auto& token : partial_tokens) {
+    if (token.kind == GuardSubtreeProbeTokenKind::TensorNoHasAttr &&
+        !guard_last_success_add_type_proof(
+            token.type,
+            token.no_hasattr_key,
+            seen_types,
+            type_proofs)) {
+      return false;
+    }
+  }
   guard_last_success_retain_token_objects(
       partial_tokens, retained_token_objects);
   return true;
@@ -1667,6 +1774,7 @@ struct GuardLastSuccessPartialPlan {
     self_framelocals_index = -1;
     stability_tokens.clear();
     tokens.clear();
+    type_proofs.clear();
     cross_slice_relations.clear();
     retained_token_objects.clear();
   }
@@ -1690,6 +1798,7 @@ struct GuardLastSuccessPartialPlan {
       void* new_root_key,
       std::vector<GuardSubtreeEntryToken>&& new_stability_tokens,
       std::vector<GuardSubtreeEntryToken>&& new_tokens,
+      std::vector<GuardSubtreeTypeProof>&& new_type_proofs,
       std::vector<GuardCrossSliceRelationPlan>&& new_cross_slice_relations,
       std::vector<py::object>&& new_retained_token_objects) {
     const bool stable = entry_key == new_entry_key &&
@@ -1706,6 +1815,7 @@ struct GuardLastSuccessPartialPlan {
       state = GuardLastSuccessPartialPlanState::Training;
     }
     tokens = std::move(new_tokens);
+    type_proofs = std::move(new_type_proofs);
     cross_slice_relations = std::move(new_cross_slice_relations);
     retained_token_objects = std::move(new_retained_token_objects);
     if (state != GuardLastSuccessPartialPlanState::Enabled &&
@@ -1726,6 +1836,7 @@ struct GuardLastSuccessPartialPlan {
   int self_framelocals_index{-1};
   std::vector<GuardSubtreeEntryToken> stability_tokens;
   std::vector<GuardSubtreeEntryToken> tokens;
+  std::vector<GuardSubtreeTypeProof> type_proofs;
   std::vector<GuardCrossSliceRelationPlan> cross_slice_relations;
   std::vector<py::object> retained_token_objects;
 };
@@ -1736,19 +1847,6 @@ struct GuardLastSuccessReceipt {
   }
 
   GuardLastSuccessPartialPlan actual_partial;
-};
-
-struct GuardLocalStateScope {
-  explicit GuardLocalStateScope(const LocalState* state)
-      : previous(active_guard_local_state) {
-    active_guard_local_state = state;
-  }
-
-  ~GuardLocalStateScope() {
-    active_guard_local_state = previous;
-  }
-
-  const LocalState* previous{nullptr};
 };
 
 static bool guard_subtree_exact_list_token_matches_current(
@@ -1775,11 +1873,18 @@ static bool guard_subtree_exact_list_token_matches_current(
 
 static bool guard_subtree_memo_tokens_match(
     const std::vector<GuardSubtreeEntryToken>& tokens,
-    PyObject* root_value) {
+    PyObject* root_value,
+    const LocalState* local_state) {
   for (size_t i = 0; i < tokens.size(); ++i) {
     const auto& token = tokens[i];
     if (token.kind == GuardSubtreeProbeTokenKind::TensorMatch) {
-      if (!guard_subtree_tensor_token_matches_current(token)) {
+      if (!guard_subtree_tensor_token_matches_current(token, local_state)) {
+        return false;
+      }
+      continue;
+    }
+    if (token.kind == GuardSubtreeProbeTokenKind::TensorNoHasAttr) {
+      if (!guard_subtree_tensor_no_hasattr_token_matches_current(token)) {
         return false;
       }
       continue;
@@ -1950,6 +2055,7 @@ static bool guard_last_success_extract_self_partial_tokens(
 struct GuardLastSuccessPartialPlanBuild {
   std::vector<GuardSubtreeEntryToken> stability_tokens;
   std::vector<GuardSubtreeEntryToken> hot_tokens;
+  std::vector<GuardSubtreeTypeProof> type_proofs;
   std::vector<GuardCrossSliceRelationPlan> cross_slice_relations;
   std::vector<py::object> retained_token_objects;
 };
@@ -1996,13 +2102,15 @@ static bool guard_last_success_prepare_actual_partial(
       partial_tokens,
       build.stability_tokens,
       build.hot_tokens,
+      build.type_proofs,
       build.cross_slice_relations,
       build.retained_token_objects);
 }
 
 static bool guard_last_success_actual_partial_tokens_match(
     const GuardLastSuccessPartialPlan& plan,
-    FrameLocalsMapping* f_locals) {
+    FrameLocalsMapping* f_locals,
+    const LocalState* local_state) {
   if (plan.tokens.empty()) {
     return false;
   }
@@ -2022,7 +2130,13 @@ static bool guard_last_success_actual_partial_tokens_match(
   if (current_self != expected_self) {
     return false;
   }
-  return guard_subtree_memo_tokens_match(plan.tokens, current_self);
+  for (const auto& proof : plan.type_proofs) {
+    if (!proof.matches_current()) {
+      return false;
+    }
+  }
+  return guard_subtree_memo_tokens_match(
+      plan.tokens, current_self, local_state);
 }
 
 thread_local std::vector<GuardSubtreeEntryToken>*
@@ -2030,7 +2144,6 @@ thread_local std::vector<GuardSubtreeEntryToken>*
 thread_local std::vector<std::string>*
     active_guard_subtree_memo_debug_paths = nullptr;
 thread_local bool active_guard_subtree_memo_relax_global_dicts = false;
-thread_local const LocalState* active_guard_local_state = nullptr;
 
 struct GuardSubtreeMemoRecorderScope {
   explicit GuardSubtreeMemoRecorderScope(
@@ -3369,6 +3482,34 @@ class NO_HASATTR : public LeafGuard {
 
   bool check_nopybind(PyObject* value) override { // borrowed ref
     return PyObject_HasAttr(value, _attr_name.ptr()) == 0;
+  }
+
+  bool emits_subtree_memo_token() const override {
+    return true;
+  }
+
+  bool append_subtree_memo_token(
+      PyObject* value,
+      std::vector<GuardSubtreeEntryToken>* tokens) override {
+    if (!check_nopybind(value)) {
+      return false;
+    }
+    const bool is_dynamic_indices = PyUnicode_Check(_attr_name.ptr()) &&
+        PyUnicode_CompareWithASCIIString(
+            _attr_name.ptr(), "_dynamo_dynamic_indices") == 0;
+    if (!is_dynamic_indices || !THPVariable_CheckExact(value)) {
+      return true;
+    }
+    auto token = GuardSubtreeEntryToken::make_tensor_no_hasattr(
+        value, _attr_name.ptr());
+    if (_PyType_Lookup(Py_TYPE(value), _attr_name.ptr()) != nullptr) {
+      // A descriptor can implement arbitrary lookup semantics. Keep a token in
+      // the receipt so partial-plan construction fails closed below.
+      token.type = nullptr;
+    }
+    append_guard_subtree_memo_token(
+        tokens, std::move(token), "<TENSOR_NO_HASATTR>");
+    return true;
   }
 
  private:
@@ -5135,7 +5276,6 @@ class RootGuardManager : public GuardManager {
       LocalState state;
       _local_state = state;
     }
-    GuardLocalStateScope local_state_scope(&_local_state);
 
     if constexpr (HasActualPartial) {
       if (actual_partial_plan == nullptr ||
@@ -5144,7 +5284,7 @@ class RootGuardManager : public GuardManager {
       }
       *actual_partial_token_miss = false;
       if (!guard_last_success_actual_partial_tokens_match(
-              *actual_partial_plan, value)) {
+              *actual_partial_plan, value, &_local_state)) {
         *actual_partial_token_miss = true;
         return false;
       }
@@ -8458,6 +8598,7 @@ bool run_root_guard_manager_with_last_success_receipt(
       root,
       std::move(build.stability_tokens),
       std::move(build.hot_tokens),
+      std::move(build.type_proofs),
       std::move(build.cross_slice_relations),
       std::move(build.retained_token_objects));
   return true;
