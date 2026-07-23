@@ -2066,6 +2066,54 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             check=True,
         )
 
+    def test_actual_partial_misses_on_data_descriptor_install(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            GLOBAL_DICT = {"used": 1, "noise": [0]}
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.scale = torch.ones(2)
+
+                def forward(self, x):
+                    return self.scale + x + GLOBAL_DICT["used"]
+
+            class ScaleDescriptor:
+                def __get__(self, obj, owner):
+                    return torch.full((2,), 5.0)
+
+                def __set__(self, obj, value):
+                    obj.__dict__["scale"] = value
+
+            model = Model()
+            counter = CompileCounter()
+            compiled = torch.compile(model, backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            for i in range(8):
+                GLOBAL_DICT["noise"] = [i]
+                torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+            assert counter.frame_count == 1, counter.frame_count
+
+            Model.scale = ScaleDescriptor()
+            try:
+                GLOBAL_DICT["noise"] = [100]
+                torch.testing.assert_close(compiled(x), torch.full((2,), 6.0))
+                assert counter.frame_count == 2, counter.frame_count
+            finally:
+                del Model.scale
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
 
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests
