@@ -195,6 +195,11 @@ struct GuardActualPartialCapabilityCensus {
   uint64_t type_method_owner_misses{0};
   uint64_t type_method_type_misses{0};
   uint64_t type_method_type_refreshes{0};
+  uint64_t instance_attr_owner_proofs{0};
+  uint64_t instance_attr_type_proofs{0};
+  uint64_t instance_attr_owner_misses{0};
+  uint64_t instance_attr_type_misses{0};
+  uint64_t instance_attr_type_refreshes{0};
 };
 
 enum class GuardActualPartialAccessorRecordKind : uint8_t {
@@ -285,6 +290,65 @@ struct GuardSubtreeTypeMethodTypeProof {
     }
     if (!guard_subtree_ensure_type_version(
             current_type, bindings.front().key.ptr())) {
+      PyErr_Clear();
+      return false;
+    }
+    version = current_type->tp_version_tag;
+    refreshed = true;
+    return true;
+  }
+};
+
+struct GuardSubtreeInstanceAttrOwnerProof {
+  py::object owner;
+  PyObject* owner_ptr{nullptr};
+  py::object key;
+  py::object expected;
+  py::object dict;
+  PyTypeObject* owner_type{nullptr};
+  bool owner_is_self{false};
+
+  bool matches_current(PyObject* current_self) const {
+    PyObject* current_owner = owner_is_self ? current_self : owner.ptr();
+    if (current_owner == nullptr || Py_TYPE(current_owner) != owner_type) {
+      return false;
+    }
+    PyObject** dictptr = _PyObject_GetDictPtr(current_owner);
+    return dictptr != nullptr && *dictptr == dict.ptr() &&
+        PyDict_CheckExact(*dictptr) &&
+        PyDict_GetItem(*dictptr, key.ptr()) == expected.ptr();
+  }
+};
+
+struct GuardSubtreeInstanceAttrTypeProof {
+  py::object type;
+  getattrfunc getattr{nullptr};
+  getattrofunc getattro{nullptr};
+  unsigned int version{0};
+  std::vector<py::object> absent_keys;
+
+  bool matches_or_refreshes_current(bool& refreshed) {
+    refreshed = false;
+    auto* current_type = reinterpret_cast<PyTypeObject*>(type.ptr());
+    if (guard_subtree_type_version_is_valid(current_type) &&
+        current_type->tp_version_tag == version) {
+      return true;
+    }
+    if (current_type == nullptr || current_type->tp_getattr != getattr ||
+        current_type->tp_getattro != getattro || absent_keys.empty()) {
+      return false;
+    }
+    for (const auto& key : absent_keys) {
+      if (_PyType_Lookup(current_type, key.ptr()) != nullptr) {
+        return false;
+      }
+      if (PyErr_Occurred()) {
+        PyErr_Clear();
+        return false;
+      }
+    }
+    if (!guard_subtree_ensure_type_version(
+            current_type, absent_keys.front().ptr())) {
       PyErr_Clear();
       return false;
     }
@@ -1947,6 +2011,96 @@ static bool guard_last_success_build_type_method_proofs(
   return true;
 }
 
+static bool guard_last_success_build_instance_attr_proofs(
+    const std::vector<GuardActualPartialAccessorRecord>& records,
+    PyObject* current_self,
+    std::vector<GuardSubtreeInstanceAttrOwnerProof>& owner_proofs,
+    std::vector<GuardSubtreeInstanceAttrTypeProof>& type_proofs) {
+  owner_proofs.clear();
+  type_proofs.clear();
+  for (const auto& record : records) {
+    if (record.kind !=
+        GuardActualPartialAccessorRecordKind::InstanceAttrBinding) {
+      continue;
+    }
+    if (record.owner_ptr == nullptr || record.key.ptr() == nullptr ||
+        record.resolved.ptr() == nullptr || record.owner_dict.ptr() == nullptr ||
+        record.owner_type == nullptr || !record.exact_owner_dict ||
+        Py_TYPE(record.owner_ptr) != record.owner_type ||
+        _PyType_Lookup(record.owner_type, record.key.ptr()) != nullptr ||
+        PyDict_GetItem(record.owner_dict.ptr(), record.key.ptr()) !=
+            record.resolved.ptr() ||
+        !guard_subtree_ensure_type_version(
+            record.owner_type, record.key.ptr())) {
+      PyErr_Clear();
+      return false;
+    }
+
+    bool owner_seen = false;
+    for (const auto& proof : owner_proofs) {
+      if (proof.owner_ptr == record.owner_ptr &&
+          proof.key.ptr() == record.key.ptr()) {
+        owner_seen = true;
+        if (proof.owner_type != record.owner_type ||
+            proof.dict.ptr() != record.owner_dict.ptr() ||
+            proof.expected.ptr() != record.resolved.ptr()) {
+          return false;
+        }
+        break;
+      }
+    }
+    if (!owner_seen) {
+      GuardSubtreeInstanceAttrOwnerProof proof;
+      proof.owner = record.owner;
+      proof.owner_ptr = record.owner_ptr;
+      proof.key = record.key;
+      proof.expected = record.resolved;
+      proof.dict = record.owner_dict;
+      proof.owner_type = record.owner_type;
+      if (record.owner_ptr == current_self) {
+        proof.owner = py::object();
+        proof.owner_is_self = true;
+      }
+      owner_proofs.push_back(std::move(proof));
+    }
+
+    GuardSubtreeInstanceAttrTypeProof* type_proof = nullptr;
+    for (auto& proof : type_proofs) {
+      if (proof.type.ptr() ==
+          reinterpret_cast<PyObject*>(record.owner_type)) {
+        type_proof = &proof;
+        break;
+      }
+    }
+    if (type_proof == nullptr) {
+      GuardSubtreeInstanceAttrTypeProof proof;
+      proof.type = py::reinterpret_borrow<py::object>(
+          reinterpret_cast<PyObject*>(record.owner_type));
+      proof.getattr = record.owner_type->tp_getattr;
+      proof.getattro = record.owner_type->tp_getattro;
+      proof.version = record.owner_type->tp_version_tag;
+      type_proofs.push_back(std::move(proof));
+      type_proof = &type_proofs.back();
+    }
+    bool key_seen = false;
+    for (const auto& key : type_proof->absent_keys) {
+      if (key.ptr() == record.key.ptr()) {
+        key_seen = true;
+        break;
+      }
+    }
+    if (!key_seen) {
+      type_proof->absent_keys.push_back(record.key);
+    }
+  }
+  if (guard_fast_plan_capability_census_enabled()) {
+    auto& census = guard_actual_partial_capability_census;
+    census.instance_attr_owner_proofs += owner_proofs.size();
+    census.instance_attr_type_proofs += type_proofs.size();
+  }
+  return true;
+}
+
 static void guard_last_success_retain_token_objects(
     const std::vector<GuardSubtreeEntryToken>& partial_tokens,
     std::vector<py::object>& retained_token_objects) {
@@ -2065,6 +2219,8 @@ struct GuardLastSuccessPartialPlan {
     type_proofs.clear();
     type_method_owner_proofs.clear();
     type_method_type_proofs.clear();
+    instance_attr_owner_proofs.clear();
+    instance_attr_type_proofs.clear();
     cross_slice_relations.clear();
     retained_token_objects.clear();
   }
@@ -2093,6 +2249,10 @@ struct GuardLastSuccessPartialPlan {
           new_type_method_owner_proofs,
       std::vector<GuardSubtreeTypeMethodTypeProof>&&
           new_type_method_type_proofs,
+      std::vector<GuardSubtreeInstanceAttrOwnerProof>&&
+          new_instance_attr_owner_proofs,
+      std::vector<GuardSubtreeInstanceAttrTypeProof>&&
+          new_instance_attr_type_proofs,
       std::vector<GuardCrossSliceRelationPlan>&& new_cross_slice_relations,
       std::vector<py::object>&& new_retained_token_objects) {
     const bool stable = entry_key == new_entry_key &&
@@ -2113,6 +2273,9 @@ struct GuardLastSuccessPartialPlan {
     type_method_owner_proofs =
         std::move(new_type_method_owner_proofs);
     type_method_type_proofs = std::move(new_type_method_type_proofs);
+    instance_attr_owner_proofs =
+        std::move(new_instance_attr_owner_proofs);
+    instance_attr_type_proofs = std::move(new_instance_attr_type_proofs);
     cross_slice_relations = std::move(new_cross_slice_relations);
     retained_token_objects = std::move(new_retained_token_objects);
     if (state != GuardLastSuccessPartialPlanState::Enabled &&
@@ -2136,6 +2299,8 @@ struct GuardLastSuccessPartialPlan {
   std::vector<GuardSubtreeTypeProof> type_proofs;
   std::vector<GuardSubtreeTypeMethodOwnerProof> type_method_owner_proofs;
   std::vector<GuardSubtreeTypeMethodTypeProof> type_method_type_proofs;
+  std::vector<GuardSubtreeInstanceAttrOwnerProof> instance_attr_owner_proofs;
+  std::vector<GuardSubtreeInstanceAttrTypeProof> instance_attr_type_proofs;
   std::vector<GuardCrossSliceRelationPlan> cross_slice_relations;
   std::vector<py::object> retained_token_objects;
 };
@@ -2357,6 +2522,8 @@ struct GuardLastSuccessPartialPlanBuild {
   std::vector<GuardSubtreeTypeProof> type_proofs;
   std::vector<GuardSubtreeTypeMethodOwnerProof> type_method_owner_proofs;
   std::vector<GuardSubtreeTypeMethodTypeProof> type_method_type_proofs;
+  std::vector<GuardSubtreeInstanceAttrOwnerProof> instance_attr_owner_proofs;
+  std::vector<GuardSubtreeInstanceAttrTypeProof> instance_attr_type_proofs;
   std::vector<GuardCrossSliceRelationPlan> cross_slice_relations;
   std::vector<py::object> retained_token_objects;
 };
@@ -2404,6 +2571,13 @@ static bool guard_last_success_prepare_actual_partial(
           current_self,
           build.type_method_owner_proofs,
           build.type_method_type_proofs)) {
+    return false;
+  }
+  if (!guard_last_success_build_instance_attr_proofs(
+          accessor_records,
+          current_self,
+          build.instance_attr_owner_proofs,
+          build.instance_attr_type_proofs)) {
     return false;
   }
 
@@ -2461,6 +2635,26 @@ static bool guard_last_success_actual_partial_tokens_match(
     if (!proof.matches_current(current_self)) {
       if (guard_fast_plan_capability_census_enabled()) {
         ++guard_actual_partial_capability_census.type_method_owner_misses;
+      }
+      return false;
+    }
+  }
+  for (auto& proof : plan.instance_attr_type_proofs) {
+    bool refreshed = false;
+    if (!proof.matches_or_refreshes_current(refreshed)) {
+      if (guard_fast_plan_capability_census_enabled()) {
+        ++guard_actual_partial_capability_census.instance_attr_type_misses;
+      }
+      return false;
+    }
+    if (refreshed && guard_fast_plan_capability_census_enabled()) {
+      ++guard_actual_partial_capability_census.instance_attr_type_refreshes;
+    }
+  }
+  for (const auto& proof : plan.instance_attr_owner_proofs) {
+    if (!proof.matches_current(current_self)) {
+      if (guard_fast_plan_capability_census_enabled()) {
+        ++guard_actual_partial_capability_census.instance_attr_owner_misses;
       }
       return false;
     }
@@ -2743,6 +2937,12 @@ static py::dict guard_actual_partial_get_capability_census() {
   result["type_method_type_misses"] = census.type_method_type_misses;
   result["type_method_type_refreshes"] =
       census.type_method_type_refreshes;
+  result["instance_attr_owner_proofs"] = census.instance_attr_owner_proofs;
+  result["instance_attr_type_proofs"] = census.instance_attr_type_proofs;
+  result["instance_attr_owner_misses"] = census.instance_attr_owner_misses;
+  result["instance_attr_type_misses"] = census.instance_attr_type_misses;
+  result["instance_attr_type_refreshes"] =
+      census.instance_attr_type_refreshes;
   return result;
 }
 
@@ -9331,6 +9531,8 @@ bool run_root_guard_manager_with_last_success_receipt(
       std::move(build.type_proofs),
       std::move(build.type_method_owner_proofs),
       std::move(build.type_method_type_proofs),
+      std::move(build.instance_attr_owner_proofs),
+      std::move(build.instance_attr_type_proofs),
       std::move(build.cross_slice_relations),
       std::move(build.retained_token_objects));
   return true;

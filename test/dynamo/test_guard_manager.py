@@ -1810,6 +1810,11 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             assert census["type_method_owner_misses"] == 0, census
             assert census["type_method_type_misses"] == 0, census
             assert census["type_method_type_refreshes"] == 0, census
+            assert census["instance_attr_owner_proofs"] == 0, census
+            assert census["instance_attr_type_proofs"] == 0, census
+            assert census["instance_attr_owner_misses"] == 0, census
+            assert census["instance_attr_type_misses"] == 0, census
+            assert census["instance_attr_type_refreshes"] == 0, census
 
             class CustomGetattributeModel(torch.nn.Module):
                 def __init__(self):
@@ -1942,6 +1947,112 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 assert refresh_counter.frame_count == 1, refresh_counter.frame_count
                 census = guards._get_guard_fast_plan_capability_census()
                 assert census["type_method_type_refreshes"] > 0, census
+            finally:
+                del RefreshModel._fastguard_unrelated_type_change
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        env["TORCHDYNAMO_GUARD_FAST_PLAN_CAPABILITY_CENSUS"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
+    def test_actual_partial_instance_attr_binding_proof(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            guards = torch._C._dynamo.guards
+            GLOBAL_DICT = {"used": 1, "noise": [0]}
+
+            def warm(compiled, x, expected):
+                for i in range(8):
+                    GLOBAL_DICT["noise"] = [i]
+                    torch.testing.assert_close(compiled(x), expected)
+
+            class InstanceMutationModel(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.scale = torch.ones(2)
+
+                def forward(self, x):
+                    return self.scale + x + GLOBAL_DICT["used"]
+
+            guards._reset_guard_fast_plan_capability_census()
+            model = InstanceMutationModel()
+            counter = CompileCounter()
+            compiled = torch.compile(model, backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            warm(compiled, x, torch.full((2,), 2.0))
+            census = guards._get_guard_fast_plan_capability_census()
+            assert census["instance_attr_owner_proofs"] > 0, census
+            assert census["instance_attr_type_proofs"] > 0, census
+
+            model.scale = torch.full((2,), 3.0)
+            GLOBAL_DICT["noise"] = [100]
+            torch.testing.assert_close(compiled(x), torch.full((2,), 4.0))
+            assert counter.frame_count == 2, counter.frame_count
+            census = guards._get_guard_fast_plan_capability_census()
+            assert census["instance_attr_owner_misses"] > 0, census
+
+            class DescriptorMutationModel(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.scale = torch.ones(2)
+
+                def forward(self, x):
+                    return self.scale + x + GLOBAL_DICT["used"]
+
+            guards._reset_guard_fast_plan_capability_census()
+            descriptor_model = DescriptorMutationModel()
+            descriptor_counter = CompileCounter()
+            descriptor_compiled = torch.compile(
+                descriptor_model, backend=descriptor_counter, fullgraph=True
+            )
+            warm(descriptor_compiled, x, torch.full((2,), 2.0))
+            DescriptorMutationModel.scale = property(
+                lambda self: torch.full((2,), 5.0)
+            )
+            try:
+                GLOBAL_DICT["noise"] = [200]
+                torch.testing.assert_close(
+                    descriptor_compiled(x), torch.full((2,), 6.0)
+                )
+                assert descriptor_counter.frame_count == 2, (
+                    descriptor_counter.frame_count
+                )
+                census = guards._get_guard_fast_plan_capability_census()
+                assert census["instance_attr_type_misses"] > 0, census
+            finally:
+                del DescriptorMutationModel.scale
+
+            class RefreshModel(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.scale = torch.ones(2)
+
+                def forward(self, x):
+                    return self.scale + x + GLOBAL_DICT["used"]
+
+            guards._reset_guard_fast_plan_capability_census()
+            refresh_model = RefreshModel()
+            refresh_counter = CompileCounter()
+            refresh_compiled = torch.compile(
+                refresh_model, backend=refresh_counter, fullgraph=True
+            )
+            warm(refresh_compiled, x, torch.full((2,), 2.0))
+            RefreshModel._fastguard_unrelated_type_change = None
+            try:
+                GLOBAL_DICT["noise"] = [300]
+                torch.testing.assert_close(
+                    refresh_compiled(x), torch.full((2,), 2.0)
+                )
+                assert refresh_counter.frame_count == 1, refresh_counter.frame_count
+                census = guards._get_guard_fast_plan_capability_census()
+                assert census["instance_attr_type_refreshes"] > 0, census
             finally:
                 del RefreshModel._fastguard_unrelated_type_change
         """
