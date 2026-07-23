@@ -179,6 +179,24 @@ struct GuardActualPartialCapabilityCensus {
   uint64_t list_getitem_accessors{0};
   uint64_t tuple_getitem_accessors{0};
   uint64_t other_accessors{0};
+  uint64_t owner_path_records{0};
+  uint64_t owner_path_unique_records{0};
+  uint64_t generic_dict_binding_records{0};
+  uint64_t generic_dict_binding_unsupported{0};
+};
+
+enum class GuardActualPartialAccessorRecordKind : uint8_t {
+  GenericDictBinding,
+};
+
+struct GuardActualPartialAccessorRecord {
+  GuardActualPartialAccessorRecordKind kind{
+      GuardActualPartialAccessorRecordKind::GenericDictBinding};
+  py::object owner;
+  PyObject* owner_ptr{nullptr};
+  py::object resolved;
+  PyTypeObject* owner_type{nullptr};
+  bool exact_owner_dict{false};
 };
 
 thread_local GuardActualPartialCapabilityCensus
@@ -2209,6 +2227,8 @@ thread_local std::vector<GuardSubtreeEntryToken>*
     active_guard_subtree_memo_recorder = nullptr;
 thread_local std::vector<std::string>*
     active_guard_subtree_memo_debug_paths = nullptr;
+thread_local std::vector<GuardActualPartialAccessorRecord>*
+    active_guard_actual_partial_accessor_records = nullptr;
 thread_local bool* active_guard_actual_partial_supported = nullptr;
 thread_local int active_guard_actual_partial_self_depth = 0;
 thread_local bool active_guard_subtree_memo_relax_global_dicts = false;
@@ -2266,6 +2286,57 @@ static void guard_actual_partial_record_accessor_capability(
   }
 }
 
+static bool guard_actual_partial_is_recording_source(
+    const std::string& source);
+
+static void guard_actual_partial_record_generic_dict_binding(
+    PyObject* owner,
+    PyObject* dict,
+    const std::string& source) {
+  if (active_guard_actual_partial_accessor_records == nullptr ||
+      !guard_actual_partial_is_recording_source(source) || owner == nullptr ||
+      dict == nullptr) {
+    return;
+  }
+
+  PyObject** dictptr = _PyObject_GetDictPtr(owner);
+  const bool exact_owner_dict = dictptr != nullptr && *dictptr == dict &&
+      PyDict_CheckExact(dict);
+
+  GuardActualPartialAccessorRecord record;
+  record.owner = py::reinterpret_borrow<py::object>(owner);
+  record.owner_ptr = owner;
+  record.resolved = py::reinterpret_borrow<py::object>(dict);
+  record.owner_type = Py_TYPE(owner);
+  record.exact_owner_dict = exact_owner_dict;
+  active_guard_actual_partial_accessor_records->push_back(std::move(record));
+
+  if (guard_fast_plan_capability_census_enabled()) {
+    auto& census = guard_actual_partial_capability_census;
+    ++census.owner_path_records;
+    if (exact_owner_dict) {
+      ++census.generic_dict_binding_records;
+    } else {
+      ++census.generic_dict_binding_unsupported;
+    }
+  }
+}
+
+static void guard_actual_partial_finalize_accessor_records(
+    const std::vector<GuardActualPartialAccessorRecord>& records) {
+  if (!guard_fast_plan_capability_census_enabled()) {
+    return;
+  }
+  std::unordered_set<PyObject*> unique_owners;
+  for (const auto& record : records) {
+    if (record.owner_ptr != nullptr) {
+      unique_owners.insert(record.owner_ptr);
+    }
+  }
+  guard_actual_partial_capability_census.owner_path_unique_records +=
+      unique_owners.size();
+}
+
 static void guard_actual_partial_reset_capability_census() {
   guard_actual_partial_capability_census = {};
 }
@@ -2288,6 +2359,12 @@ static py::dict guard_actual_partial_get_capability_census() {
   result["list_getitem_accessors"] = census.list_getitem_accessors;
   result["tuple_getitem_accessors"] = census.tuple_getitem_accessors;
   result["other_accessors"] = census.other_accessors;
+  result["owner_path_records"] = census.owner_path_records;
+  result["owner_path_unique_records"] = census.owner_path_unique_records;
+  result["generic_dict_binding_records"] =
+      census.generic_dict_binding_records;
+  result["generic_dict_binding_unsupported"] =
+      census.generic_dict_binding_unsupported;
   return result;
 }
 
@@ -2325,10 +2402,13 @@ struct GuardSubtreeMemoRecorderScope {
   explicit GuardSubtreeMemoRecorderScope(
       std::vector<GuardSubtreeEntryToken>* tokens,
       std::vector<std::string>* debug_paths = nullptr,
+      std::vector<GuardActualPartialAccessorRecord>* accessor_records = nullptr,
       bool* actual_partial_supported = nullptr,
       bool relax_global_dicts = false)
       : previous(active_guard_subtree_memo_recorder),
         previous_debug_paths(active_guard_subtree_memo_debug_paths),
+        previous_accessor_records(
+            active_guard_actual_partial_accessor_records),
         previous_actual_partial_supported(
             active_guard_actual_partial_supported),
         previous_actual_partial_self_depth(
@@ -2337,6 +2417,7 @@ struct GuardSubtreeMemoRecorderScope {
             active_guard_subtree_memo_relax_global_dicts) {
     active_guard_subtree_memo_recorder = tokens;
     active_guard_subtree_memo_debug_paths = debug_paths;
+    active_guard_actual_partial_accessor_records = accessor_records;
     active_guard_actual_partial_supported = actual_partial_supported;
     if (actual_partial_supported != nullptr) {
       active_guard_actual_partial_self_depth = 0;
@@ -2347,6 +2428,7 @@ struct GuardSubtreeMemoRecorderScope {
   ~GuardSubtreeMemoRecorderScope() {
     active_guard_subtree_memo_recorder = previous;
     active_guard_subtree_memo_debug_paths = previous_debug_paths;
+    active_guard_actual_partial_accessor_records = previous_accessor_records;
     active_guard_actual_partial_supported =
         previous_actual_partial_supported;
     active_guard_actual_partial_self_depth =
@@ -2357,6 +2439,8 @@ struct GuardSubtreeMemoRecorderScope {
 
   std::vector<GuardSubtreeEntryToken>* previous{nullptr};
   std::vector<std::string>* previous_debug_paths{nullptr};
+  std::vector<GuardActualPartialAccessorRecord>* previous_accessor_records{
+      nullptr};
   bool* previous_actual_partial_supported{nullptr};
   int previous_actual_partial_self_depth{0};
   bool previous_relax_global_dicts{false};
@@ -6720,6 +6804,7 @@ class GetGenericDictGuardAccessor : public GuardAccessor {
       PyErr_Clear();
       return false;
     }
+    guard_actual_partial_record_generic_dict_binding(obj, x, get_source());
     bool result = _guard_manager->check_nopybind(x);
     Py_DECREF(x);
     return result;
@@ -8819,15 +8904,17 @@ bool run_root_guard_manager_with_last_success_receipt(
 
   std::vector<GuardSubtreeEntryToken> tokens;
   std::vector<std::string> debug_paths;
+  std::vector<GuardActualPartialAccessorRecord> accessor_records;
   bool actual_partial_supported = true;
   {
     GuardSubtreeMemoRecorderScope recorder(
-        &tokens, &debug_paths, &actual_partial_supported);
+        &tokens, &debug_paths, &accessor_records, &actual_partial_supported);
     if (!run_root_guard_manager(root, f_locals)) {
       state->reset();
       return false;
     }
   }
+  guard_actual_partial_finalize_accessor_records(accessor_records);
 
   if (!actual_partial_supported) {
     state->actual_partial.disable();

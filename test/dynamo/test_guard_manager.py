@@ -1727,6 +1727,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
     def test_actual_partial_capability_census_is_training_only_diagnostic(self):
         script = """
             import torch
+            from torch._dynamo.testing import CompileCounter
 
             class Model(torch.nn.Module):
                 def __init__(self):
@@ -1739,16 +1740,29 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
 
             guards = torch._C._dynamo.guards
             guards._reset_guard_fast_plan_capability_census()
-            compiled = torch.compile(Model(), backend="eager", fullgraph=True)
+            counter = CompileCounter()
+            compiled = torch.compile(Model(), backend=counter, fullgraph=True)
             x = torch.zeros(2)
             for _ in range(8):
                 torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+            assert counter.frame_count == 1, counter.frame_count
 
             census = guards._get_guard_fast_plan_capability_census()
             assert census["enabled"], census
             assert census["leaf_observations"] > 0, census
             assert census["accessor_observations"] > 0, census
             assert census["get_attr_accessors"] > 0, census
+            assert census["owner_path_records"] > 0, census
+            assert 0 < census["owner_path_unique_records"] <= census[
+                "owner_path_records"
+            ], census
+            assert (
+                census["generic_dict_binding_records"]
+                + census["generic_dict_binding_unsupported"]
+                == census["owner_path_records"]
+            ), census
+            assert census["generic_dict_binding_records"] > 0, census
+            assert census["generic_dict_binding_unsupported"] == 0, census
             classified_accessors = sum(
                 census[name]
                 for name in (
@@ -1768,6 +1782,10 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             census = guards._get_guard_fast_plan_capability_census()
             assert census["leaf_observations"] == 0, census
             assert census["accessor_observations"] == 0, census
+            assert census["owner_path_records"] == 0, census
+            assert census["owner_path_unique_records"] == 0, census
+            assert census["generic_dict_binding_records"] == 0, census
+            assert census["generic_dict_binding_unsupported"] == 0, census
         """
         env = os.environ.copy()
         env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
