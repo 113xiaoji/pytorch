@@ -154,9 +154,48 @@ enum class GuardSubtreeProbeTokenKind : uint8_t {
 constexpr size_t kGuardLastSuccessActualMaxTokens = 65536;
 constexpr uint64_t kGuardLastSuccessActualStablePasses = 3;
 
+enum class GuardActualPartialAccessorCensusKind : uint8_t {
+  Other,
+  GetAttr,
+  GenericGetAttr,
+  GetGenericDict,
+  FrameLocals,
+  DictGetItem,
+  ListGetItem,
+  TupleGetItem,
+};
+
+struct GuardActualPartialCapabilityCensus {
+  uint64_t leaf_observations{0};
+  uint64_t leaf_token_emitters{0};
+  uint64_t leaf_without_tokens{0};
+  uint64_t no_hasattr_leaf_observations{0};
+  uint64_t accessor_observations{0};
+  uint64_t get_attr_accessors{0};
+  uint64_t generic_get_attr_accessors{0};
+  uint64_t get_generic_dict_accessors{0};
+  uint64_t frame_locals_accessors{0};
+  uint64_t dict_getitem_accessors{0};
+  uint64_t list_getitem_accessors{0};
+  uint64_t tuple_getitem_accessors{0};
+  uint64_t other_accessors{0};
+};
+
+thread_local GuardActualPartialCapabilityCensus
+    guard_actual_partial_capability_census;
+
 static bool guard_fast_plan_enabled() {
   static const bool env_enabled =
       c10::utils::check_env("TORCHDYNAMO_GUARD_FAST_PLAN") == true;
+  return C10_UNLIKELY(env_enabled);
+}
+
+static bool guard_fast_plan_capability_census_enabled() {
+  // This diagnostic records only coarse categories during full-guard training;
+  // it never changes actual-partial plan admission or emits model identities.
+  static const bool env_enabled =
+      c10::utils::check_env(
+          "TORCHDYNAMO_GUARD_FAST_PLAN_CAPABILITY_CENSUS") == true;
   return C10_UNLIKELY(env_enabled);
 }
 
@@ -2174,6 +2213,84 @@ thread_local bool* active_guard_actual_partial_supported = nullptr;
 thread_local int active_guard_actual_partial_self_depth = 0;
 thread_local bool active_guard_subtree_memo_relax_global_dicts = false;
 
+static void guard_actual_partial_record_leaf_capability(
+    bool emits_token,
+    bool is_no_hasattr) {
+  if (!guard_fast_plan_capability_census_enabled()) {
+    return;
+  }
+  auto& census = guard_actual_partial_capability_census;
+  ++census.leaf_observations;
+  if (emits_token) {
+    ++census.leaf_token_emitters;
+  } else {
+    ++census.leaf_without_tokens;
+  }
+  if (is_no_hasattr) {
+    ++census.no_hasattr_leaf_observations;
+  }
+}
+
+static void guard_actual_partial_record_accessor_capability(
+    GuardActualPartialAccessorCensusKind kind) {
+  if (!guard_fast_plan_capability_census_enabled()) {
+    return;
+  }
+  auto& census = guard_actual_partial_capability_census;
+  ++census.accessor_observations;
+  switch (kind) {
+    case GuardActualPartialAccessorCensusKind::GetAttr:
+      ++census.get_attr_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::GenericGetAttr:
+      ++census.generic_get_attr_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::GetGenericDict:
+      ++census.get_generic_dict_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::FrameLocals:
+      ++census.frame_locals_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::DictGetItem:
+      ++census.dict_getitem_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::ListGetItem:
+      ++census.list_getitem_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::TupleGetItem:
+      ++census.tuple_getitem_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::Other:
+      ++census.other_accessors;
+      break;
+  }
+}
+
+static void guard_actual_partial_reset_capability_census() {
+  guard_actual_partial_capability_census = {};
+}
+
+static py::dict guard_actual_partial_get_capability_census() {
+  const auto& census = guard_actual_partial_capability_census;
+  py::dict result;
+  result["enabled"] = guard_fast_plan_capability_census_enabled();
+  result["leaf_observations"] = census.leaf_observations;
+  result["leaf_token_emitters"] = census.leaf_token_emitters;
+  result["leaf_without_tokens"] = census.leaf_without_tokens;
+  result["no_hasattr_leaf_observations"] =
+      census.no_hasattr_leaf_observations;
+  result["accessor_observations"] = census.accessor_observations;
+  result["get_attr_accessors"] = census.get_attr_accessors;
+  result["generic_get_attr_accessors"] = census.generic_get_attr_accessors;
+  result["get_generic_dict_accessors"] = census.get_generic_dict_accessors;
+  result["frame_locals_accessors"] = census.frame_locals_accessors;
+  result["dict_getitem_accessors"] = census.dict_getitem_accessors;
+  result["list_getitem_accessors"] = census.list_getitem_accessors;
+  result["tuple_getitem_accessors"] = census.tuple_getitem_accessors;
+  result["other_accessors"] = census.other_accessors;
+  return result;
+}
+
 static bool guard_actual_partial_is_recording_source(
     const std::string& source) {
   return active_guard_actual_partial_supported != nullptr &&
@@ -3030,6 +3147,9 @@ class LeafGuard {
   virtual bool emits_subtree_memo_token_for_frame_locals() const {
     return false;
   }
+  virtual bool is_actual_partial_no_hasattr_guard() const {
+    return false;
+  }
   virtual bool append_subtree_memo_token(
       PyObject* value,
       std::vector<GuardSubtreeEntryToken>* /*tokens*/) {
@@ -3559,6 +3679,10 @@ class NO_HASATTR : public LeafGuard {
   }
 
   bool emits_subtree_memo_token() const override {
+    return true;
+  }
+
+  bool is_actual_partial_no_hasattr_guard() const override {
     return true;
   }
 
@@ -4259,6 +4383,10 @@ class GuardAccessor {
   virtual bool supports_subtree_memo() const {
     return true;
   }
+  virtual GuardActualPartialAccessorCensusKind
+  actual_partial_census_kind() const {
+    return GuardActualPartialAccessorCensusKind::Other;
+  }
   virtual GuardDebugInfo check_verbose_nopybind(PyObject* obj) = 0;
   virtual std::string repr() const = 0;
 
@@ -4945,6 +5073,14 @@ class GuardManager {
   bool check_leaf_guards_nopybind(T* value) {
     for (const auto& guard : _leaf_guards) {
       bool result = false;
+      if constexpr (std::is_same_v<T, PyObject>) {
+        if (C10_UNLIKELY(
+                guard_actual_partial_is_recording_source(_source))) {
+          guard_actual_partial_record_leaf_capability(
+              guard->emits_subtree_memo_token(),
+              guard->is_actual_partial_no_hasattr_guard());
+        }
+      }
       if (C10_UNLIKELY(active_guard_subtree_memo_recorder != nullptr)) {
         bool emit_subtree_memo_token = false;
         if constexpr (std::is_same_v<T, PyObject>) {
@@ -4993,6 +5129,10 @@ class GuardManager {
     for (const auto& accessor : _accessors) {
       const bool actual_partial_self = C10_UNLIKELY(
           guard_actual_partial_is_recording_source(accessor->get_source()));
+      if (actual_partial_self) {
+        guard_actual_partial_record_accessor_capability(
+            accessor->actual_partial_census_kind());
+      }
       GuardActualPartialSelfScope self_scope(actual_partial_self);
       const bool accessor_result =
           accessor->check_nopybind(value, matches_dict_tag);
@@ -6375,6 +6515,11 @@ class TENSOR_MATCH : public LeafGuard {
 class GetAttrGuardAccessor : public GuardAccessor {
  public:
 
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::GetAttr;
+  }
+
   GetAttrGuardAccessor(
       RootGuardManager* root,
       py::str name,
@@ -6456,6 +6601,11 @@ class GetAttrGuardAccessor : public GuardAccessor {
 class GenericGetAttrGuardAccessor : public GuardAccessor {
  public:
 
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::GenericGetAttr;
+  }
+
   GenericGetAttrGuardAccessor(
       RootGuardManager* root,
       py::str name,
@@ -6535,6 +6685,11 @@ class GenericGetAttrGuardAccessor : public GuardAccessor {
  */
 class GetGenericDictGuardAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::GetGenericDict;
+  }
+
   GetGenericDictGuardAccessor(
       RootGuardManager* root,
       py::str name,
@@ -6687,6 +6842,11 @@ class GetItemGuardAccessor : public GuardAccessor {
  */
 class FrameLocalsGuardAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::FrameLocals;
+  }
+
   int framelocals_index() const override {
     return _framelocals_idx;
   }
@@ -6814,6 +6974,11 @@ class FrameLocalsGuardAccessor : public GuardAccessor {
  */
 class DictGetItemGuardAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::DictGetItem;
+  }
+
   DictGetItemGuardAccessor(
       RootGuardManager* root,
       py::object key,
@@ -6902,6 +7067,11 @@ class DictGetItemGuardAccessor : public GuardAccessor {
  */
 class ListGetItemGuardAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::ListGetItem;
+  }
+
   ListGetItemGuardAccessor(
       RootGuardManager* root,
       const py::object& index,
@@ -7049,6 +7219,11 @@ class SetGetItemGuardAccessor : public GuardAccessor {
  */
 class TupleGetItemGuardAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::TupleGetItem;
+  }
+
   TupleGetItemGuardAccessor(
       RootGuardManager* root,
       const py::object& index,
@@ -8752,6 +8927,13 @@ PyObject* torch_c_dynamo_guards_init() {
   }
 
   auto py_m = py::handle(m).cast<py::module>();
+  py_m.def(
+      "_get_guard_fast_plan_capability_census",
+      &guard_actual_partial_get_capability_census);
+  py_m.def(
+      "_reset_guard_fast_plan_capability_census",
+      &guard_actual_partial_reset_capability_census);
+
   py::class_<GuardDebugInfo, std::unique_ptr<GuardDebugInfo>>(
       py_m, "GuardDebugInfo")
       .def(py::init<bool, py::list, int>())

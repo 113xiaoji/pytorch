@@ -1610,6 +1610,175 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             check=True,
         )
 
+    def test_actual_partial_refreshes_unrelated_tensor_type_change(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self._cached_tensor = torch.ones(2)
+
+                def forward(self, x):
+                    return self._cached_tensor + x
+
+            model = Model()
+            counter = CompileCounter()
+            compiled = torch.compile(
+                model, backend=counter, fullgraph=True, dynamic=True
+            )
+            x = torch.zeros(2)
+            for _ in range(8):
+                torch.testing.assert_close(compiled(x), torch.ones(2))
+            assert counter.frame_count == 1, counter.frame_count
+
+            torch.Tensor._fastguard_unrelated_type_change = None
+            try:
+                torch.testing.assert_close(compiled(x), torch.ones(2))
+                assert counter.frame_count == 1, counter.frame_count
+            finally:
+                del torch.Tensor._fastguard_unrelated_type_change
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
+    def test_actual_partial_type_proof_fails_closed_on_class_attr(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self._cached_tensor = torch.ones(2)
+
+                def forward(self, x):
+                    return self._cached_tensor + x
+
+            model = Model()
+            counter = CompileCounter()
+            compiled = torch.compile(
+                model, backend=counter, fullgraph=True, dynamic=True
+            )
+            x = torch.zeros(2)
+            for _ in range(8):
+                torch.testing.assert_close(compiled(x), torch.ones(2))
+            assert counter.frame_count == 1, counter.frame_count
+
+            torch.Tensor._dynamo_dynamic_indices = set()
+            try:
+                torch.testing.assert_close(compiled(x), torch.ones(2))
+                assert counter.frame_count == 2, counter.frame_count
+            finally:
+                del torch.Tensor._dynamo_dynamic_indices
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
+    def test_actual_partial_rejects_ordinary_no_hasattr(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            GLOBAL_DICT = {"used": 1, "noise": [0]}
+
+            class Model(torch.nn.Module):
+                def forward(self, x):
+                    if hasattr(self, "scale"):
+                        return x + self.scale + GLOBAL_DICT["used"]
+                    return x + 1 + GLOBAL_DICT["used"]
+
+            model = Model()
+            counter = CompileCounter()
+            compiled = torch.compile(model, backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            for i in range(8):
+                GLOBAL_DICT["noise"] = [i]
+                torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+            assert counter.frame_count == 1, counter.frame_count
+
+            model.scale = torch.full((2,), 5.0)
+            GLOBAL_DICT["noise"] = [100]
+            torch.testing.assert_close(compiled(x), torch.full((2,), 6.0))
+            assert counter.frame_count == 2, counter.frame_count
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
+    def test_actual_partial_capability_census_is_training_only_diagnostic(self):
+        script = """
+            import torch
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self._cached_tensor = torch.ones(2)
+                    self.offsets = [1.0]
+
+                def forward(self, x):
+                    return self._cached_tensor + x + self.offsets[0]
+
+            guards = torch._C._dynamo.guards
+            guards._reset_guard_fast_plan_capability_census()
+            compiled = torch.compile(Model(), backend="eager", fullgraph=True)
+            x = torch.zeros(2)
+            for _ in range(8):
+                torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+
+            census = guards._get_guard_fast_plan_capability_census()
+            assert census["enabled"], census
+            assert census["leaf_observations"] > 0, census
+            assert census["accessor_observations"] > 0, census
+            assert census["get_attr_accessors"] > 0, census
+            classified_accessors = sum(
+                census[name]
+                for name in (
+                    "get_attr_accessors",
+                    "generic_get_attr_accessors",
+                    "get_generic_dict_accessors",
+                    "frame_locals_accessors",
+                    "dict_getitem_accessors",
+                    "list_getitem_accessors",
+                    "tuple_getitem_accessors",
+                    "other_accessors",
+                )
+            )
+            assert classified_accessors == census["accessor_observations"], census
+
+            guards._reset_guard_fast_plan_capability_census()
+            census = guards._get_guard_fast_plan_capability_census()
+            assert census["leaf_observations"] == 0, census
+            assert census["accessor_observations"] == 0, census
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        env["TORCHDYNAMO_GUARD_FAST_PLAN_CAPABILITY_CENSUS"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
 
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests
