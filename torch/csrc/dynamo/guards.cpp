@@ -1041,29 +1041,53 @@ static bool guard_subtree_type_version_is_valid(PyTypeObject* type) {
 #endif
 }
 
-static bool guard_subtree_ensure_type_version(
+static bool guard_subtree_refresh_absent_lookup_type_version(
     PyTypeObject* type,
-    PyObject* lookup_key) {
+    PyObject* lookup_key,
+    unsigned int& version) {
   if (type == nullptr || lookup_key == nullptr) {
     return false;
   }
-  (void)_PyType_Lookup(type, lookup_key);
+  if (_PyType_Lookup(type, lookup_key) != nullptr) {
+    return false;
+  }
+  if (PyErr_Occurred()) {
+    PyErr_Clear();
+    return false;
+  }
 #if PY_VERSION_HEX >= 0x030C0000
   if (PyUnstable_Type_AssignVersionTag(type) == 0) {
     return false;
   }
 #endif
-  return guard_subtree_type_version_is_valid(type);
+  if (!guard_subtree_type_version_is_valid(type)) {
+    return false;
+  }
+  version = type->tp_version_tag;
+  return true;
 }
 
 struct GuardSubtreeTypeProof {
   py::object type;
+  py::object lookup_key;
+  getattrfunc getattr{nullptr};
+  getattrofunc getattro{nullptr};
   unsigned int version{0};
 
-  bool matches_current() const {
+  bool matches_or_refreshes_current() {
     auto* current_type = reinterpret_cast<PyTypeObject*>(type.ptr());
-    return guard_subtree_type_version_is_valid(current_type) &&
-        current_type->tp_version_tag == version;
+    if (guard_subtree_type_version_is_valid(current_type) &&
+        current_type->tp_version_tag == version) {
+      return true;
+    }
+    // An unchanged attribute-access slot plus an absent class/MRO lookup
+    // preserves the exact Tensor instance-dict NO_HASATTR proof.
+    if (current_type == nullptr || current_type->tp_getattr != getattr ||
+        current_type->tp_getattro != getattro) {
+      return false;
+    }
+    return guard_subtree_refresh_absent_lookup_type_version(
+        current_type, lookup_key.ptr(), version);
   }
 };
 
@@ -1638,19 +1662,26 @@ static bool guard_last_success_build_relation_plans(
 static bool guard_last_success_add_type_proof(
     PyTypeObject* type,
     PyObject* lookup_key,
-    std::unordered_set<PyTypeObject*>& seen,
     std::vector<GuardSubtreeTypeProof>& proofs) {
-  if (!seen.insert(type).second) {
-    return true;
+  for (const auto& proof : proofs) {
+    if (proof.type.ptr() == reinterpret_cast<PyObject*>(type) &&
+        proof.lookup_key.ptr() == lookup_key) {
+      return true;
+    }
   }
-  if (!guard_subtree_ensure_type_version(type, lookup_key)) {
+  unsigned int version = 0;
+  if (!guard_subtree_refresh_absent_lookup_type_version(
+          type, lookup_key, version)) {
     PyErr_Clear();
     return false;
   }
   GuardSubtreeTypeProof proof;
   proof.type = py::reinterpret_borrow<py::object>(
       reinterpret_cast<PyObject*>(type));
-  proof.version = type->tp_version_tag;
+  proof.lookup_key = py::reinterpret_borrow<py::object>(lookup_key);
+  proof.getattr = type->tp_getattr;
+  proof.getattro = type->tp_getattro;
+  proof.version = version;
   proofs.push_back(std::move(proof));
   return true;
 }
@@ -1710,14 +1741,10 @@ static bool guard_last_success_build_partial_plan_tokens(
       hot_tokens.end());
 
   type_proofs.clear();
-  std::unordered_set<PyTypeObject*> seen_types;
   for (const auto& token : partial_tokens) {
     if (token.kind == GuardSubtreeProbeTokenKind::TensorNoHasAttr &&
         !guard_last_success_add_type_proof(
-            token.type,
-            token.no_hasattr_key,
-            seen_types,
-            type_proofs)) {
+            token.type, token.no_hasattr_key, type_proofs)) {
       return false;
     }
   }
@@ -2108,7 +2135,7 @@ static bool guard_last_success_prepare_actual_partial(
 }
 
 static bool guard_last_success_actual_partial_tokens_match(
-    const GuardLastSuccessPartialPlan& plan,
+    GuardLastSuccessPartialPlan& plan,
     FrameLocalsMapping* f_locals,
     const LocalState* local_state) {
   if (plan.tokens.empty()) {
@@ -2130,8 +2157,8 @@ static bool guard_last_success_actual_partial_tokens_match(
   if (current_self != expected_self) {
     return false;
   }
-  for (const auto& proof : plan.type_proofs) {
-    if (!proof.matches_current()) {
+  for (auto& proof : plan.type_proofs) {
+    if (!proof.matches_or_refreshes_current()) {
       return false;
     }
   }
@@ -2143,31 +2170,78 @@ thread_local std::vector<GuardSubtreeEntryToken>*
     active_guard_subtree_memo_recorder = nullptr;
 thread_local std::vector<std::string>*
     active_guard_subtree_memo_debug_paths = nullptr;
+thread_local bool* active_guard_actual_partial_supported = nullptr;
+thread_local int active_guard_actual_partial_self_depth = 0;
 thread_local bool active_guard_subtree_memo_relax_global_dicts = false;
+
+static bool guard_actual_partial_is_recording_source(
+    const std::string& source) {
+  return active_guard_actual_partial_supported != nullptr &&
+      (active_guard_actual_partial_self_depth > 0 ||
+       is_self_local_source_path(source));
+}
+
+static void guard_actual_partial_mark_unsupported() {
+  if (active_guard_actual_partial_supported != nullptr &&
+      active_guard_actual_partial_self_depth > 0) {
+    *active_guard_actual_partial_supported = false;
+  }
+}
+
+struct GuardActualPartialSelfScope {
+  explicit GuardActualPartialSelfScope(bool enter) : entered(enter) {
+    if (entered) {
+      ++active_guard_actual_partial_self_depth;
+    }
+  }
+
+  ~GuardActualPartialSelfScope() {
+    if (entered) {
+      --active_guard_actual_partial_self_depth;
+    }
+  }
+
+  bool entered{false};
+};
 
 struct GuardSubtreeMemoRecorderScope {
   explicit GuardSubtreeMemoRecorderScope(
       std::vector<GuardSubtreeEntryToken>* tokens,
       std::vector<std::string>* debug_paths = nullptr,
+      bool* actual_partial_supported = nullptr,
       bool relax_global_dicts = false)
       : previous(active_guard_subtree_memo_recorder),
         previous_debug_paths(active_guard_subtree_memo_debug_paths),
+        previous_actual_partial_supported(
+            active_guard_actual_partial_supported),
+        previous_actual_partial_self_depth(
+            active_guard_actual_partial_self_depth),
         previous_relax_global_dicts(
             active_guard_subtree_memo_relax_global_dicts) {
     active_guard_subtree_memo_recorder = tokens;
     active_guard_subtree_memo_debug_paths = debug_paths;
+    active_guard_actual_partial_supported = actual_partial_supported;
+    if (actual_partial_supported != nullptr) {
+      active_guard_actual_partial_self_depth = 0;
+    }
     active_guard_subtree_memo_relax_global_dicts = relax_global_dicts;
   }
 
   ~GuardSubtreeMemoRecorderScope() {
     active_guard_subtree_memo_recorder = previous;
     active_guard_subtree_memo_debug_paths = previous_debug_paths;
+    active_guard_actual_partial_supported =
+        previous_actual_partial_supported;
+    active_guard_actual_partial_self_depth =
+        previous_actual_partial_self_depth;
     active_guard_subtree_memo_relax_global_dicts =
         previous_relax_global_dicts;
   }
 
   std::vector<GuardSubtreeEntryToken>* previous{nullptr};
   std::vector<std::string>* previous_debug_paths{nullptr};
+  bool* previous_actual_partial_supported{nullptr};
+  int previous_actual_partial_self_depth{0};
   bool previous_relax_global_dicts{false};
 };
 
@@ -3498,6 +3572,7 @@ class NO_HASATTR : public LeafGuard {
         PyUnicode_CompareWithASCIIString(
             _attr_name.ptr(), "_dynamo_dynamic_indices") == 0;
     if (!is_dynamic_indices || !THPVariable_CheckExact(value)) {
+      guard_actual_partial_mark_unsupported();
       return true;
     }
     auto token = GuardSubtreeEntryToken::make_tensor_no_hasattr(
@@ -4916,6 +4991,9 @@ class GuardManager {
     bool result = true;
     bool failed_on_first = true;
     for (const auto& accessor : _accessors) {
+      const bool actual_partial_self = C10_UNLIKELY(
+          guard_actual_partial_is_recording_source(accessor->get_source()));
+      GuardActualPartialSelfScope self_scope(actual_partial_self);
       const bool accessor_result =
           accessor->check_nopybind(value, matches_dict_tag);
       if (!accessor_result) { // early exit
@@ -5257,7 +5335,7 @@ class RootGuardManager : public GuardManager {
   bool check_nopybind_template(
       T* value,
       const std::string* skip_accessor_source = nullptr,
-      const GuardLastSuccessPartialPlan* actual_partial_plan = nullptr,
+      GuardLastSuccessPartialPlan* actual_partial_plan = nullptr,
       bool* actual_partial_token_miss = nullptr) { // borrowed ref
     // Check [Note on GIL interaction with mutex lock] for details on why we
     // need mutex and its interactions with GIL.
@@ -5364,7 +5442,7 @@ class RootGuardManager : public GuardManager {
   bool check_nopybind_actual_partial(
       FrameLocalsMapping* value,
       const std::string& skip_accessor_source,
-      const GuardLastSuccessPartialPlan& plan,
+      GuardLastSuccessPartialPlan& plan,
       bool& token_miss) {
     return check_nopybind_template<true>(
         value, &skip_accessor_source, &plan, &token_miss);
@@ -8566,12 +8644,19 @@ bool run_root_guard_manager_with_last_success_receipt(
 
   std::vector<GuardSubtreeEntryToken> tokens;
   std::vector<std::string> debug_paths;
+  bool actual_partial_supported = true;
   {
-    GuardSubtreeMemoRecorderScope recorder(&tokens, &debug_paths);
+    GuardSubtreeMemoRecorderScope recorder(
+        &tokens, &debug_paths, &actual_partial_supported);
     if (!run_root_guard_manager(root, f_locals)) {
       state->reset();
       return false;
     }
+  }
+
+  if (!actual_partial_supported) {
+    state->actual_partial.disable();
+    return true;
   }
 
   if (tokens.empty() || debug_paths.size() != tokens.size() ||
