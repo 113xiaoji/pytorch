@@ -1110,6 +1110,21 @@ static bool guard_subtree_type_version_is_valid(PyTypeObject* type) {
 #endif
 }
 
+static bool guard_subtree_ensure_type_version(
+    PyTypeObject* type,
+    PyObject* lookup_key) {
+  if (type == nullptr || lookup_key == nullptr) {
+    return false;
+  }
+  (void)_PyType_Lookup(type, lookup_key);
+#if PY_VERSION_HEX >= 0x030C0000
+  if (PyUnstable_Type_AssignVersionTag(type) == 0) {
+    return false;
+  }
+#endif
+  return guard_subtree_type_version_is_valid(type);
+}
+
 static bool guard_subtree_refresh_absent_lookup_type_version(
     PyTypeObject* type,
     PyObject* lookup_key,
