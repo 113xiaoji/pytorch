@@ -1805,6 +1805,11 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             assert census["instance_attr_non_default_getattribute"] == 0, census
             assert census["instance_attr_unique_owners"] == 0, census
             assert census["instance_attr_unique_types"] == 0, census
+            assert census["type_method_owner_proofs"] == 0, census
+            assert census["type_method_type_proofs"] == 0, census
+            assert census["type_method_owner_misses"] == 0, census
+            assert census["type_method_type_misses"] == 0, census
+            assert census["type_method_type_refreshes"] == 0, census
 
             class CustomGetattributeModel(torch.nn.Module):
                 def __init__(self):
@@ -1834,6 +1839,111 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 census["instance_attr_binding_unsupported"]
                 >= census["instance_attr_non_default_getattribute"]
             ), census
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        env["TORCHDYNAMO_GUARD_FAST_PLAN_CAPABILITY_CENSUS"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
+    def test_actual_partial_type_method_binding_proof(self):
+        script = """
+            import types
+
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            guards = torch._C._dynamo.guards
+            GLOBAL_DICT = {"used": 1, "noise": [0]}
+
+            def warm(compiled, x, expected):
+                for i in range(8):
+                    GLOBAL_DICT["noise"] = [i]
+                    torch.testing.assert_close(compiled(x), expected)
+
+            class InstanceShadowModel(torch.nn.Module):
+                def helper(self, x):
+                    return x + 1
+
+                def forward(self, x):
+                    return self.helper(x) + GLOBAL_DICT["used"]
+
+            guards._reset_guard_fast_plan_capability_census()
+            model = InstanceShadowModel()
+            counter = CompileCounter()
+            compiled = torch.compile(model, backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            warm(compiled, x, torch.full((2,), 2.0))
+            census = guards._get_guard_fast_plan_capability_census()
+            assert census["type_method_owner_proofs"] > 0, census
+            assert census["type_method_type_proofs"] > 0, census
+
+            def replacement(self, value):
+                return value + 4
+
+            model.helper = types.MethodType(replacement, model)
+            GLOBAL_DICT["noise"] = [100]
+            torch.testing.assert_close(compiled(x), torch.full((2,), 5.0))
+            assert counter.frame_count == 2, counter.frame_count
+            census = guards._get_guard_fast_plan_capability_census()
+            assert census["type_method_owner_misses"] > 0, census
+
+            class ClassMutationModel(torch.nn.Module):
+                def helper(self, x):
+                    return x + 1
+
+                def forward(self, x):
+                    return self.helper(x) + GLOBAL_DICT["used"]
+
+            guards._reset_guard_fast_plan_capability_census()
+            class_model = ClassMutationModel()
+            class_counter = CompileCounter()
+            class_compiled = torch.compile(
+                class_model, backend=class_counter, fullgraph=True
+            )
+            warm(class_compiled, x, torch.full((2,), 2.0))
+            original = ClassMutationModel.helper
+            ClassMutationModel.helper = replacement
+            try:
+                GLOBAL_DICT["noise"] = [200]
+                torch.testing.assert_close(
+                    class_compiled(x), torch.full((2,), 5.0)
+                )
+                assert class_counter.frame_count == 2, class_counter.frame_count
+                census = guards._get_guard_fast_plan_capability_census()
+                assert census["type_method_type_misses"] > 0, census
+            finally:
+                ClassMutationModel.helper = original
+
+            class RefreshModel(torch.nn.Module):
+                def helper(self, x):
+                    return x + 1
+
+                def forward(self, x):
+                    return self.helper(x) + GLOBAL_DICT["used"]
+
+            guards._reset_guard_fast_plan_capability_census()
+            refresh_model = RefreshModel()
+            refresh_counter = CompileCounter()
+            refresh_compiled = torch.compile(
+                refresh_model, backend=refresh_counter, fullgraph=True
+            )
+            warm(refresh_compiled, x, torch.full((2,), 2.0))
+            RefreshModel._fastguard_unrelated_type_change = None
+            try:
+                GLOBAL_DICT["noise"] = [300]
+                torch.testing.assert_close(
+                    refresh_compiled(x), torch.full((2,), 2.0)
+                )
+                assert refresh_counter.frame_count == 1, refresh_counter.frame_count
+                census = guards._get_guard_fast_plan_capability_census()
+                assert census["type_method_type_refreshes"] > 0, census
+            finally:
+                del RefreshModel._fastguard_unrelated_type_change
         """
         env = os.environ.copy()
         env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
