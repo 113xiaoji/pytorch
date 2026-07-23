@@ -1735,8 +1735,13 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                     self._cached_tensor = torch.ones(2)
                     self.offsets = [1.0]
 
+                def helper(self, x):
+                    return x
+
                 def forward(self, x):
-                    return self._cached_tensor + x + self.offsets[0]
+                    return self.helper(
+                        self._cached_tensor + x + self.offsets[0]
+                    )
 
             guards = torch._C._dynamo.guards
             guards._reset_guard_fast_plan_capability_census()
@@ -1759,10 +1764,17 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             assert (
                 census["generic_dict_binding_records"]
                 + census["generic_dict_binding_unsupported"]
+                + census["instance_attr_binding_records"]
+                + census["type_method_binding_records"]
+                + census["instance_attr_binding_unsupported"]
                 == census["owner_path_records"]
             ), census
             assert census["generic_dict_binding_records"] > 0, census
             assert census["generic_dict_binding_unsupported"] == 0, census
+            assert census["instance_attr_binding_records"] > 0, census
+            assert census["type_method_binding_records"] > 0, census
+            assert census["instance_attr_unique_owners"] > 0, census
+            assert census["instance_attr_unique_types"] > 0, census
             classified_accessors = sum(
                 census[name]
                 for name in (
@@ -1786,6 +1798,42 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             assert census["owner_path_unique_records"] == 0, census
             assert census["generic_dict_binding_records"] == 0, census
             assert census["generic_dict_binding_unsupported"] == 0, census
+            assert census["generic_dict_unique_owners"] == 0, census
+            assert census["instance_attr_binding_records"] == 0, census
+            assert census["type_method_binding_records"] == 0, census
+            assert census["instance_attr_binding_unsupported"] == 0, census
+            assert census["instance_attr_non_default_getattribute"] == 0, census
+            assert census["instance_attr_unique_owners"] == 0, census
+            assert census["instance_attr_unique_types"] == 0, census
+
+            class CustomGetattributeModel(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.scale = torch.ones(2)
+
+                def __getattribute__(self, name):
+                    return object.__getattribute__(self, name)
+
+                def forward(self, x):
+                    return self.scale + x
+
+            custom_counter = CompileCounter()
+            custom_compiled = torch.compile(
+                CustomGetattributeModel(),
+                backend=custom_counter,
+                fullgraph=True,
+            )
+            for _ in range(8):
+                torch.testing.assert_close(
+                    custom_compiled(x), torch.ones(2)
+                )
+            assert custom_counter.frame_count == 1, custom_counter.frame_count
+            census = guards._get_guard_fast_plan_capability_census()
+            assert census["instance_attr_non_default_getattribute"] > 0, census
+            assert (
+                census["instance_attr_binding_unsupported"]
+                >= census["instance_attr_non_default_getattribute"]
+            ), census
         """
         env = os.environ.copy()
         env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"

@@ -183,10 +183,20 @@ struct GuardActualPartialCapabilityCensus {
   uint64_t owner_path_unique_records{0};
   uint64_t generic_dict_binding_records{0};
   uint64_t generic_dict_binding_unsupported{0};
+  uint64_t generic_dict_unique_owners{0};
+  uint64_t instance_attr_binding_records{0};
+  uint64_t type_method_binding_records{0};
+  uint64_t instance_attr_binding_unsupported{0};
+  uint64_t instance_attr_non_default_getattribute{0};
+  uint64_t instance_attr_unique_owners{0};
+  uint64_t instance_attr_unique_types{0};
 };
 
 enum class GuardActualPartialAccessorRecordKind : uint8_t {
   GenericDictBinding,
+  InstanceAttrBinding,
+  TypeMethodBinding,
+  UnsupportedInstanceAttrBinding,
 };
 
 struct GuardActualPartialAccessorRecord {
@@ -194,7 +204,9 @@ struct GuardActualPartialAccessorRecord {
       GuardActualPartialAccessorRecordKind::GenericDictBinding};
   py::object owner;
   PyObject* owner_ptr{nullptr};
+  py::object key;
   py::object resolved;
+  py::object owner_dict;
   PyTypeObject* owner_type{nullptr};
   bool exact_owner_dict{false};
 };
@@ -2322,19 +2334,134 @@ static void guard_actual_partial_record_generic_dict_binding(
   }
 }
 
+static bool guard_actual_partial_uses_default_getattribute(
+    PyTypeObject* type) {
+  if (type == nullptr) {
+    return false;
+  }
+  if (type->tp_getattro == PyObject_GenericGetAttr) {
+    return true;
+  }
+  if (!PyType_HasFeature(type, Py_TPFLAGS_HEAPTYPE)) {
+    return false;
+  }
+  static PyObject* getattribute_key =
+      PyUnicode_InternFromString("__getattribute__");
+  static PyObject* getattr_key = PyUnicode_InternFromString("__getattr__");
+  if (getattribute_key == nullptr || getattr_key == nullptr) {
+    PyErr_Clear();
+    return false;
+  }
+  return _PyType_Lookup(type, getattribute_key) ==
+      _PyType_Lookup(&PyBaseObject_Type, getattribute_key) &&
+      _PyType_Lookup(type, getattr_key) != nullptr;
+}
+
+static void guard_actual_partial_record_instance_attr_binding(
+    PyObject* owner,
+    PyObject* key,
+    PyObject* expected,
+    const std::string& source,
+    bool require_default_getattribute) {
+  if (active_guard_actual_partial_accessor_records == nullptr ||
+      !guard_actual_partial_is_recording_source(source) || owner == nullptr ||
+      key == nullptr || expected == nullptr) {
+    return;
+  }
+
+  GuardActualPartialAccessorRecord record;
+  record.owner = py::reinterpret_borrow<py::object>(owner);
+  record.owner_ptr = owner;
+  record.key = py::reinterpret_borrow<py::object>(key);
+  record.resolved = py::reinterpret_borrow<py::object>(expected);
+  record.owner_type = Py_TYPE(owner);
+
+  const bool default_getattribute =
+      !require_default_getattribute ||
+      guard_actual_partial_uses_default_getattribute(record.owner_type);
+  PyObject** dictptr = _PyObject_GetDictPtr(owner);
+  PyObject* type_attr =
+      PyUnicode_Check(key) ? _PyType_Lookup(record.owner_type, key) : nullptr;
+  const bool exact_owner_dict = dictptr != nullptr && *dictptr != nullptr &&
+      PyDict_CheckExact(*dictptr);
+  if (exact_owner_dict) {
+    record.owner_dict = py::reinterpret_borrow<py::object>(*dictptr);
+  }
+  record.exact_owner_dict = exact_owner_dict;
+
+  const bool direct_instance_binding = default_getattribute &&
+      PyUnicode_Check(key) && exact_owner_dict &&
+      PyDict_GetItem(*dictptr, key) == expected && type_attr == nullptr;
+  const bool type_method_binding = default_getattribute &&
+      type_attr != nullptr && PyMethod_Check(expected) &&
+      PyMethod_GET_SELF(expected) == owner &&
+      PyMethod_GET_FUNCTION(expected) == type_attr &&
+      (dictptr == nullptr || *dictptr == nullptr ||
+       (exact_owner_dict && PyDict_GetItem(*dictptr, key) == nullptr));
+  bool type_version_ready = false;
+  if (direct_instance_binding || type_method_binding) {
+    type_version_ready =
+        guard_subtree_ensure_type_version(record.owner_type, key);
+    if (!type_version_ready) {
+      PyErr_Clear();
+    }
+  }
+
+  if (direct_instance_binding && type_version_ready) {
+    record.kind = GuardActualPartialAccessorRecordKind::InstanceAttrBinding;
+  } else if (type_method_binding && type_version_ready) {
+    record.kind = GuardActualPartialAccessorRecordKind::TypeMethodBinding;
+    record.resolved = py::reinterpret_borrow<py::object>(type_attr);
+  } else {
+    record.kind =
+        GuardActualPartialAccessorRecordKind::UnsupportedInstanceAttrBinding;
+  }
+  active_guard_actual_partial_accessor_records->push_back(std::move(record));
+
+  if (guard_fast_plan_capability_census_enabled()) {
+    auto& census = guard_actual_partial_capability_census;
+    ++census.owner_path_records;
+    if (direct_instance_binding && type_version_ready) {
+      ++census.instance_attr_binding_records;
+    } else if (type_method_binding && type_version_ready) {
+      ++census.type_method_binding_records;
+    } else {
+      ++census.instance_attr_binding_unsupported;
+      if (!default_getattribute) {
+        ++census.instance_attr_non_default_getattribute;
+      }
+    }
+  }
+}
+
 static void guard_actual_partial_finalize_accessor_records(
     const std::vector<GuardActualPartialAccessorRecord>& records) {
   if (!guard_fast_plan_capability_census_enabled()) {
     return;
   }
   std::unordered_set<PyObject*> unique_owners;
+  std::unordered_set<PyObject*> unique_generic_dict_owners;
+  std::unordered_set<PyObject*> unique_instance_attr_owners;
+  std::unordered_set<PyTypeObject*> unique_instance_attr_types;
   for (const auto& record : records) {
     if (record.owner_ptr != nullptr) {
       unique_owners.insert(record.owner_ptr);
     }
+    if (record.kind ==
+        GuardActualPartialAccessorRecordKind::GenericDictBinding) {
+      unique_generic_dict_owners.insert(record.owner_ptr);
+    } else {
+      unique_instance_attr_owners.insert(record.owner_ptr);
+      if (record.owner_type != nullptr) {
+        unique_instance_attr_types.insert(record.owner_type);
+      }
+    }
   }
-  guard_actual_partial_capability_census.owner_path_unique_records +=
-      unique_owners.size();
+  auto& census = guard_actual_partial_capability_census;
+  census.owner_path_unique_records += unique_owners.size();
+  census.generic_dict_unique_owners += unique_generic_dict_owners.size();
+  census.instance_attr_unique_owners += unique_instance_attr_owners.size();
+  census.instance_attr_unique_types += unique_instance_attr_types.size();
 }
 
 static void guard_actual_partial_reset_capability_census() {
@@ -2365,6 +2492,16 @@ static py::dict guard_actual_partial_get_capability_census() {
       census.generic_dict_binding_records;
   result["generic_dict_binding_unsupported"] =
       census.generic_dict_binding_unsupported;
+  result["generic_dict_unique_owners"] = census.generic_dict_unique_owners;
+  result["instance_attr_binding_records"] =
+      census.instance_attr_binding_records;
+  result["type_method_binding_records"] = census.type_method_binding_records;
+  result["instance_attr_binding_unsupported"] =
+      census.instance_attr_binding_unsupported;
+  result["instance_attr_non_default_getattribute"] =
+      census.instance_attr_non_default_getattribute;
+  result["instance_attr_unique_owners"] = census.instance_attr_unique_owners;
+  result["instance_attr_unique_types"] = census.instance_attr_unique_types;
   return result;
 }
 
@@ -6628,6 +6765,8 @@ class GetAttrGuardAccessor : public GuardAccessor {
       PyErr_Clear();
       return false;
     }
+    guard_actual_partial_record_instance_attr_binding(
+        obj, _attr_name, x, get_source(), true);
     bool result = check_child_manager_nopybind(x);
     Py_DECREF(x);
     return result;
@@ -6714,6 +6853,8 @@ class GenericGetAttrGuardAccessor : public GuardAccessor {
       PyErr_Clear();
       return false;
     }
+    guard_actual_partial_record_instance_attr_binding(
+        obj, _attr_name, x, get_source(), false);
     bool result = check_child_manager_nopybind(x);
     Py_DECREF(x);
     return result;
