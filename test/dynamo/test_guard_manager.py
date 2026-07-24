@@ -1905,6 +1905,10 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             assert census["unsupported_leaf_capabilities"] == 0, census
             assert census["unsupported_accessor_capabilities"] == 0, census
             assert census["equals_safe_constant_admissions"] == 0, census
+            assert census["equals_exact_set_token_emissions"] == 0, census
+            assert census["equals_exact_set_token_items"] == 0, census
+            assert census["equals_exact_set_token_max_size"] == 0, census
+            assert census["equals_exact_set_token_misses"] == 0, census
             assert census["unsupported_equals_types"] == {}, census
             assert (
                 sum(census["unsupported_leaf_capability_reasons"].values())
@@ -1942,6 +1946,51 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 census["instance_attr_binding_unsupported"]
                 >= census["instance_attr_non_default_getattribute"]
             ), census
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        env["TORCHDYNAMO_GUARD_FAST_PLAN_CAPABILITY_CENSUS"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
+    def test_actual_partial_exact_set_equals_token_detects_mutation(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.mode = {1, 2}
+
+                def forward(self, x):
+                    if self.mode == {1, 2}:
+                        return x + 1
+                    return x - 1
+
+            guards = torch._C._dynamo.guards
+            guards._reset_guard_fast_plan_capability_census()
+            model = Model()
+            counter = CompileCounter()
+            compiled = torch.compile(model, backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            for _ in range(8):
+                torch.testing.assert_close(compiled(x), torch.ones(2))
+            assert counter.frame_count == 1, counter.frame_count
+
+            census = guards._get_guard_fast_plan_capability_census()
+            assert census["equals_exact_set_token_emissions"] > 0, census
+            assert census["unsupported_leaf_capabilities"] == 0, census
+
+            model.mode.add(3)
+            torch.testing.assert_close(compiled(x), torch.full((2,), -1.0))
+            assert counter.frame_count == 2, counter.frame_count
+            census = guards._get_guard_fast_plan_capability_census()
+            assert census["equals_exact_set_token_misses"] > 0, census
         """
         env = os.environ.copy()
         env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"

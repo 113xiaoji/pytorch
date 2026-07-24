@@ -149,6 +149,7 @@ enum class GuardSubtreeProbeTokenKind : uint8_t {
   BoundMethod,
   FrameGlobals,
   TensorNoHasAttr,
+  ExactSetEquals,
 };
 
 constexpr size_t kGuardLastSuccessActualMaxTokens = 65536;
@@ -275,6 +276,10 @@ struct GuardActualPartialCapabilityCensus {
   uint64_t unsupported_leaf_capabilities{0};
   uint64_t unsupported_accessor_capabilities{0};
   uint64_t equals_safe_constant_admissions{0};
+  uint64_t equals_exact_set_token_emissions{0};
+  uint64_t equals_exact_set_token_items{0};
+  uint64_t equals_exact_set_token_max_size{0};
+  uint64_t equals_exact_set_token_misses{0};
   std::unordered_map<std::string, uint64_t> unsupported_equals_types;
   std::array<
       uint64_t,
@@ -1505,6 +1510,7 @@ struct GuardSubtreeEntryToken {
   PyTypeObject* bound_c_method_class{nullptr};
   int bound_c_method_flags{0};
   PyObject* no_hasattr_key{nullptr};
+  PyObject* expected_value{nullptr};
 
   static GuardSubtreeEntryToken make(PyObject* obj) {
     GuardSubtreeEntryToken token;
@@ -1670,6 +1676,18 @@ struct GuardSubtreeEntryToken {
     return token;
   }
 
+  static GuardSubtreeEntryToken make_exact_set_equals(
+      PyObject* obj,
+      PyObject* expected) {
+    GuardSubtreeEntryToken token;
+    token.object = obj;
+    token.type = Py_TYPE(obj);
+    token.kind = GuardSubtreeProbeTokenKind::ExactSetEquals;
+    token.expected_value = expected;
+    token.size = PySet_GET_SIZE(expected);
+    return token;
+  }
+
   bool matches_tensor_current(const LocalState* state) const {
     if (state == nullptr) {
       return false;
@@ -1772,6 +1790,9 @@ struct GuardSubtreeEntryToken {
     }
     if (kind == GuardSubtreeProbeTokenKind::TensorNoHasAttr) {
       return no_hasattr_key == other.no_hasattr_key;
+    }
+    if (kind == GuardSubtreeProbeTokenKind::ExactSetEquals) {
+      return expected_value == other.expected_value && size == other.size;
     }
     return version == other.version && size == other.size &&
         list_items == other.list_items;
@@ -1916,6 +1937,7 @@ static bool guard_subtree_token_proves_child_reachability(
     case GuardSubtreeProbeTokenKind::ExactDict:
     case GuardSubtreeProbeTokenKind::ExactList:
     case GuardSubtreeProbeTokenKind::ExactTuple:
+    case GuardSubtreeProbeTokenKind::ExactSetEquals:
       return token.object != nullptr;
     default:
       return false;
@@ -2449,6 +2471,9 @@ static void guard_last_success_retain_token_objects(
       retain(reinterpret_cast<PyObject*>(token.bound_c_method_class));
     } else {
       retain(token.object);
+      if (token.kind == GuardSubtreeProbeTokenKind::ExactSetEquals) {
+        retain(token.expected_value);
+      }
     }
   }
 }
@@ -2670,6 +2695,27 @@ static bool guard_subtree_exact_list_token_matches_current(
   return true;
 }
 
+static bool guard_subtree_exact_set_equals_token_matches_current(
+    const GuardSubtreeEntryToken& token) {
+  if (token.object == nullptr || Py_TYPE(token.object) != token.type ||
+      !PySet_CheckExact(token.object) || token.expected_value == nullptr ||
+      !PySet_CheckExact(token.expected_value) ||
+      PySet_GET_SIZE(token.expected_value) != token.size) {
+    return false;
+  }
+  const int result =
+      PyObject_RichCompareBool(token.object, token.expected_value, Py_EQ);
+  if (result < 0) {
+    PyErr_Clear();
+    return false;
+  }
+  if (result == 0 && guard_fast_plan_capability_census_enabled()) {
+    ++guard_actual_partial_capability_census
+          .equals_exact_set_token_misses;
+  }
+  return result == 1;
+}
+
 static bool guard_subtree_memo_tokens_match(
     const std::vector<GuardSubtreeEntryToken>& tokens,
     PyObject* root_value,
@@ -2684,6 +2730,12 @@ static bool guard_subtree_memo_tokens_match(
     }
     if (token.kind == GuardSubtreeProbeTokenKind::TensorNoHasAttr) {
       if (!guard_subtree_tensor_no_hasattr_token_matches_current(token)) {
+        return false;
+      }
+      continue;
+    }
+    if (token.kind == GuardSubtreeProbeTokenKind::ExactSetEquals) {
+      if (!guard_subtree_exact_set_equals_token_matches_current(token)) {
         return false;
       }
       continue;
@@ -3582,6 +3634,14 @@ static py::dict guard_actual_partial_get_capability_census() {
       census.unsupported_accessor_capabilities;
   result["equals_safe_constant_admissions"] =
       census.equals_safe_constant_admissions;
+  result["equals_exact_set_token_emissions"] =
+      census.equals_exact_set_token_emissions;
+  result["equals_exact_set_token_items"] =
+      census.equals_exact_set_token_items;
+  result["equals_exact_set_token_max_size"] =
+      census.equals_exact_set_token_max_size;
+  result["equals_exact_set_token_misses"] =
+      census.equals_exact_set_token_misses;
   py::dict unsupported_equals_types;
   for (const auto& [type_name, count] : census.unsupported_equals_types) {
     unsupported_equals_types[py::str(type_name)] = count;
@@ -4780,7 +4840,38 @@ class EQUALS_MATCH : public LeafGuard {
   bool supports_actual_partial_subtree_memo(
       PyObject* value) const override {
     return _actual_partial_safe_constant ||
-        guard_actual_partial_is_deeply_immutable(value);
+        guard_actual_partial_is_deeply_immutable(value) ||
+        (PySet_CheckExact(_value.ptr()) && PySet_CheckExact(value));
+  }
+
+  bool emits_actual_partial_subtree_memo_token() const override {
+    return PySet_CheckExact(_value.ptr());
+  }
+
+  bool append_subtree_memo_token(
+      PyObject* value,
+      std::vector<GuardSubtreeEntryToken>* tokens) override {
+    if (!check_nopybind(value)) {
+      return false;
+    }
+    if (!PySet_CheckExact(value) || !PySet_CheckExact(_value.ptr())) {
+      return true;
+    }
+    const Py_ssize_t size = PySet_GET_SIZE(_value.ptr());
+    if (guard_fast_plan_capability_census_enabled()) {
+      auto& census = guard_actual_partial_capability_census;
+      ++census.equals_exact_set_token_emissions;
+      census.equals_exact_set_token_items += static_cast<uint64_t>(size);
+      census.equals_exact_set_token_max_size = std::max(
+          census.equals_exact_set_token_max_size,
+          static_cast<uint64_t>(size));
+    }
+    append_guard_subtree_memo_token(
+        tokens,
+        GuardSubtreeEntryToken::make_exact_set_equals(
+            value, _value.ptr()),
+        "<EQUALS_EXACT_SET>");
+    return true;
   }
 
   bool actual_partial_uses_safe_constant_whitelist(
