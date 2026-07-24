@@ -2080,6 +2080,46 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             check=True,
         )
 
+    def test_actual_partial_retains_compiled_self_lifetime(self):
+        script = """
+            import gc
+            import weakref
+
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.scale = torch.ones(2)
+
+                def forward(self, x):
+                    return self.scale + x
+
+            model = Model()
+            model_ref = weakref.ref(model)
+            counter = CompileCounter()
+            compiled = torch.compile(model, backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            for _ in range(8):
+                torch.testing.assert_close(compiled(x), torch.ones(2))
+            assert counter.frame_count == 1, counter.frame_count
+
+            del model
+            gc.collect()
+            assert model_ref() is not None
+            torch.testing.assert_close(compiled(x), torch.ones(2))
+            assert counter.frame_count == 1, counter.frame_count
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
     def test_actual_partial_static_module_attr_binding_proof(self):
         script = """
             import types
@@ -2706,6 +2746,71 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 assert census["instance_attr_type_refreshes"] > 0, census
             finally:
                 del RefreshModel._fastguard_unrelated_type_change
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        env["TORCHDYNAMO_GUARD_FAST_PLAN_CAPABILITY_CENSUS"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
+    def test_actual_partial_clears_dynamic_descriptor_exception(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            guards = torch._C._dynamo.guards
+            GLOBAL_DICT = {"used": 1, "noise": [0]}
+
+            class FlakyDescriptor:
+                def __init__(self):
+                    self.fail_next = False
+
+                def __get__(self, obj, owner):
+                    if obj is None:
+                        return self
+                    if self.fail_next:
+                        self.fail_next = False
+                        raise RuntimeError("transient descriptor failure")
+                    return obj._scale
+
+                def __set__(self, obj, value):
+                    obj._scale = value
+
+            descriptor = FlakyDescriptor()
+
+            class Model(torch.nn.Module):
+                scale = descriptor
+
+                def __init__(self):
+                    super().__init__()
+                    self._scale = torch.ones(2)
+
+                def forward(self, x):
+                    return self.scale + x + GLOBAL_DICT["used"]
+
+            guards._reset_guard_fast_plan_capability_census()
+            counter = CompileCounter()
+            compiled = torch.compile(Model(), backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            for i in range(8):
+                GLOBAL_DICT["noise"] = [i]
+                torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+            assert counter.frame_count == 1, counter.frame_count
+            census = guards._get_guard_fast_plan_capability_census()
+            assert census["instance_attr_dynamic_proofs"] > 0, census
+
+            descriptor.fail_next = True
+            GLOBAL_DICT["noise"] = [100]
+            torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+            census = guards._get_guard_fast_plan_capability_census()
+            assert census["instance_attr_dynamic_misses"] > 0, census
+
+            GLOBAL_DICT["noise"] = [101]
+            torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
         """
         env = os.environ.copy()
         env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
