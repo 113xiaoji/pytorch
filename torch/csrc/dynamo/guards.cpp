@@ -6163,8 +6163,12 @@ class GuardManager {
       const bool actual_partial_self = C10_UNLIKELY(
           guard_actual_partial_is_recording_source(accessor->get_source()));
       if (actual_partial_self) {
+        PyObject* census_parent = nullptr;
+        if constexpr (std::is_same_v<T, PyObject>) {
+          census_parent = value;
+        }
         guard_actual_partial_record_accessor_capability(
-            accessor->actual_partial_census_kind(), value);
+            accessor->actual_partial_census_kind(), census_parent);
       }
       GuardActualPartialSelfScope self_scope(actual_partial_self);
       const bool accessor_result =
