@@ -1892,6 +1892,34 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             assert (
                 census["instance_attr_non_default_type_attr_absent"] == 0
             ), census
+            assert census["instance_attr_default_unsupported"] == 0, census
+            assert (
+                census["instance_attr_default_unsupported_non_unicode_key"] == 0
+            ), census
+            assert (
+                census["instance_attr_default_unsupported_type_version"] == 0
+            ), census
+            assert (
+                census[
+                    "instance_attr_default_unsupported_instance_dict_shadow"
+                ]
+                == 0
+            ), census
+            assert (
+                census["instance_attr_default_unsupported_data_descriptor"] == 0
+            ), census
+            assert (
+                census[
+                    "instance_attr_default_unsupported_non_data_descriptor"
+                ]
+                == 0
+            ), census
+            assert (
+                census["instance_attr_default_unsupported_type_attr_absent"] == 0
+            ), census
+            assert (
+                census["instance_attr_default_unsupported_other"] == 0
+            ), census
             assert (
                 census["instance_attr_non_default_unique_types"] == 0
             ), census

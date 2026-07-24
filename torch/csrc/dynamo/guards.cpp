@@ -265,6 +265,14 @@ struct GuardActualPartialCapabilityCensus {
   uint64_t instance_attr_non_default_exact_type_object{0};
   uint64_t instance_attr_non_default_exact_dict_value{0};
   uint64_t instance_attr_non_default_type_attr_absent{0};
+  uint64_t instance_attr_default_unsupported{0};
+  uint64_t instance_attr_default_unsupported_non_unicode_key{0};
+  uint64_t instance_attr_default_unsupported_type_version{0};
+  uint64_t instance_attr_default_unsupported_instance_dict_shadow{0};
+  uint64_t instance_attr_default_unsupported_data_descriptor{0};
+  uint64_t instance_attr_default_unsupported_non_data_descriptor{0};
+  uint64_t instance_attr_default_unsupported_type_attr_absent{0};
+  uint64_t instance_attr_default_unsupported_other{0};
   uint64_t instance_attr_unique_owners{0};
   uint64_t instance_attr_unique_types{0};
   uint64_t type_method_owner_proofs{0};
@@ -3889,6 +3897,29 @@ static void guard_actual_partial_record_instance_attr_binding(
             guard_actual_partial_non_default_getattribute_slots.end()) {
           guard_actual_partial_non_default_getattribute_slots.push_back(slot);
         }
+      } else {
+        ++census.instance_attr_default_unsupported;
+        if (!PyUnicode_Check(key)) {
+          ++census.instance_attr_default_unsupported_non_unicode_key;
+        } else if (
+            (direct_instance_binding || type_method_binding) &&
+            !type_version_ready) {
+          ++census.instance_attr_default_unsupported_type_version;
+        } else if (
+            exact_owner_dict && PyDict_GetItem(*dictptr, key) == expected &&
+            type_attr != nullptr && !PyDescr_IsData(type_attr)) {
+          ++census.instance_attr_default_unsupported_instance_dict_shadow;
+        } else if (type_attr != nullptr && PyDescr_IsData(type_attr)) {
+          ++census.instance_attr_default_unsupported_data_descriptor;
+        } else if (type_attr != nullptr) {
+          ++census.instance_attr_default_unsupported_non_data_descriptor;
+        } else if (
+            !exact_owner_dict ||
+            PyDict_GetItem(*dictptr, key) != expected) {
+          ++census.instance_attr_default_unsupported_type_attr_absent;
+        } else {
+          ++census.instance_attr_default_unsupported_other;
+        }
       }
     }
   }
@@ -4154,6 +4185,22 @@ static py::dict guard_actual_partial_get_capability_census() {
       census.instance_attr_non_default_exact_dict_value;
   result["instance_attr_non_default_type_attr_absent"] =
       census.instance_attr_non_default_type_attr_absent;
+  result["instance_attr_default_unsupported"] =
+      census.instance_attr_default_unsupported;
+  result["instance_attr_default_unsupported_non_unicode_key"] =
+      census.instance_attr_default_unsupported_non_unicode_key;
+  result["instance_attr_default_unsupported_type_version"] =
+      census.instance_attr_default_unsupported_type_version;
+  result["instance_attr_default_unsupported_instance_dict_shadow"] =
+      census.instance_attr_default_unsupported_instance_dict_shadow;
+  result["instance_attr_default_unsupported_data_descriptor"] =
+      census.instance_attr_default_unsupported_data_descriptor;
+  result["instance_attr_default_unsupported_non_data_descriptor"] =
+      census.instance_attr_default_unsupported_non_data_descriptor;
+  result["instance_attr_default_unsupported_type_attr_absent"] =
+      census.instance_attr_default_unsupported_type_attr_absent;
+  result["instance_attr_default_unsupported_other"] =
+      census.instance_attr_default_unsupported_other;
   result["instance_attr_non_default_unique_types"] =
       guard_actual_partial_non_default_getattribute_types.size();
   result["instance_attr_non_default_unique_slots"] =
