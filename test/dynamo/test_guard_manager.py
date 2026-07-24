@@ -1724,7 +1724,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             check=True,
         )
 
-    def test_actual_partial_capability_census_is_training_only_diagnostic(self):
+    def test_actual_partial_custom_getattribute_fails_closed(self):
         script = """
             import torch
             from torch._dynamo.testing import CompileCounter
@@ -1732,354 +1732,34 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             class Model(torch.nn.Module):
                 def __init__(self):
                     super().__init__()
-                    self._cached_tensor = torch.ones(2)
-                    self.offsets = [1.0]
-                    self.device = torch.device("cpu")
-
-                def helper(self, x):
-                    return x
-
-                def forward(self, x):
-                    return self.helper(
-                        self._cached_tensor
-                        + x.to(self.device)
-                        + self.offsets[0]
-                    )
-
-            guards = torch._C._dynamo.guards
-            guards._reset_guard_fast_plan_capability_census()
-            counter = CompileCounter()
-            compiled = torch.compile(Model(), backend=counter, fullgraph=True)
-            x = torch.zeros(2)
-            for _ in range(8):
-                torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
-            assert counter.frame_count == 1, counter.frame_count
-
-            census = guards._get_guard_fast_plan_capability_census()
-            assert census["enabled"], census
-            assert census["leaf_observations"] > 0, census
-            assert census["accessor_observations"] > 0, census
-            assert census["get_attr_accessors"] > 0, census
-            assert census["owner_path_records"] > 0, census
-            assert 0 < census["owner_path_unique_records"] <= census[
-                "owner_path_records"
-            ], census
-            assert (
-                census["generic_dict_binding_records"]
-                + census["generic_dict_binding_unsupported"]
-                + census["instance_attr_binding_records"]
-                + census["type_method_binding_records"]
-                + census["instance_attr_binding_unsupported"]
-                == census["owner_path_records"]
-            ), census
-            assert census["generic_dict_binding_records"] > 0, census
-            assert census["generic_dict_binding_unsupported"] == 0, census
-            assert census["generic_dict_owner_proofs"] > 0, census
-            assert census["generic_dict_exact_dict_tokens_removed"] > 0, census
-            assert census["instance_attr_binding_records"] > 0, census
-            assert census["type_method_binding_records"] > 0, census
-            assert census["instance_attr_unique_owners"] > 0, census
-            assert census["instance_attr_unique_types"] > 0, census
-            classified_accessors = sum(
-                census[name]
-                for name in (
-                    "get_attr_accessors",
-                    "generic_get_attr_accessors",
-                    "get_generic_dict_accessors",
-                    "frame_locals_accessors",
-                    "dict_getitem_accessors",
-                    "list_getitem_accessors",
-                    "tuple_getitem_accessors",
-                    "get_item_accessors",
-                    "set_getitem_accessors",
-                    "tensor_property_accessors",
-                    "indexed_accessors",
-                    "grad_accessors",
-                    "func_defaults_accessors",
-                    "func_kw_defaults_accessors",
-                    "globals_accessors",
-                    "type_accessors",
-                    "type_dict_accessors",
-                    "type_mro_accessors",
-                    "tuple_iterator_getitem_accessors",
-                    "global_weakref_accessors",
-                    "weakref_call_accessors",
-                    "code_accessors",
-                    "closure_accessors",
-                    "call_function_no_args_accessors",
-                    "python_lambda_accessors",
-                    "other_accessors",
-                )
-            )
-            assert classified_accessors == census["accessor_observations"], census
-            assert (
-                census["code_accessor_function_observations"]
-                + census["code_accessor_bound_method_observations"]
-                + census["code_accessor_instance_method_observations"]
-                + census["code_accessor_unsupported_observations"]
-                == census["code_accessors"]
-            ), census
-            assert (
-                census["type_accessor_unique_owners"]
-                <= census["type_accessors"]
-            ), census
-            assert (
-                census["type_accessor_unique_types"]
-                <= census["type_accessor_unique_owners"]
-            ), census
-            assert (
-                census["code_accessor_unique_functions"]
-                <= census["code_accessors"]
-            ), census
-            assert (
-                census["code_accessor_unique_codes"]
-                <= census["code_accessors"]
-            ), census
-            assert (
-                census["type_accessor_any_proof_covered_owners"]
-                + census["type_accessor_uncovered_owners"]
-                == census["type_accessor_unique_owners"]
-            ), census
-            assert census["type_accessor_coverage_failures"] == 0, census
-            assert census["code_accessor_proofs"] > 0, census
-            assert census["unsupported_leaf_capabilities"] == 0, census
-            assert census["unsupported_accessor_capabilities"] == 0, census
-            assert census["equals_safe_constant_admissions"] > 0, census
-            assert (
-                sum(census["unsupported_leaf_capability_reasons"].values())
-                == census["unsupported_leaf_capabilities"]
-            ), census
-            assert (
-                census["last_unsupported_leaf_capability_reason"] == "none"
-            ), census
-            for name in (
-                "type_accessor_generic_dict_covered_owners",
-                "type_accessor_instance_attr_covered_owners",
-                "type_accessor_type_method_covered_owners",
-            ):
-                assert (
-                    census[name]
-                    <= census["type_accessor_any_proof_covered_owners"]
-                ), census
-
-            guards._reset_guard_fast_plan_capability_census()
-            census = guards._get_guard_fast_plan_capability_census()
-            assert census["leaf_observations"] == 0, census
-            assert census["accessor_observations"] == 0, census
-            assert census["owner_path_records"] == 0, census
-            assert census["owner_path_unique_records"] == 0, census
-            assert census["generic_dict_binding_records"] == 0, census
-            assert census["generic_dict_binding_unsupported"] == 0, census
-            assert census["generic_dict_unique_owners"] == 0, census
-            assert census["generic_dict_owner_proofs"] == 0, census
-            assert census["generic_dict_owner_misses"] == 0, census
-            assert census["generic_dict_exact_dict_tokens_removed"] == 0, census
-            assert census["generic_dict_accessor_owner_proofs_removed"] == 0, census
-            assert census["instance_attr_binding_records"] == 0, census
-            assert census["type_method_binding_records"] == 0, census
-            assert census["instance_attr_binding_unsupported"] == 0, census
-            assert census["instance_attr_non_default_getattribute"] == 0, census
-            assert census["instance_attr_non_default_heap_type"] == 0, census
-            assert census["instance_attr_non_default_static_type"] == 0, census
-            assert census["instance_attr_non_default_exact_tensor"] == 0, census
-            assert census["instance_attr_non_default_exact_module"] == 0, census
-            assert (
-                census["instance_attr_non_default_exact_type_object"] == 0
-            ), census
-            assert (
-                census["instance_attr_non_default_exact_dict_value"] == 0
-            ), census
-            assert (
-                census["instance_attr_non_default_type_attr_absent"] == 0
-            ), census
-            assert census["instance_attr_default_unsupported"] == 0, census
-            assert (
-                census["instance_attr_default_unsupported_non_unicode_key"] == 0
-            ), census
-            assert (
-                census["instance_attr_default_unsupported_type_version"] == 0
-            ), census
-            assert (
-                census[
-                    "instance_attr_default_unsupported_instance_dict_shadow"
-                ]
-                == 0
-            ), census
-            assert (
-                census["instance_attr_default_shadow_plain_value"] == 0
-            ), census
-            assert (
-                census[
-                    "instance_attr_default_shadow_static_non_data_descriptor"
-                ]
-                == 0
-            ), census
-            assert (
-                census[
-                    "instance_attr_default_shadow_heap_non_data_descriptor"
-                ]
-                == 0
-            ), census
-            assert (
-                census["instance_attr_default_shadow_unique_owner_keys"] == 0
-            ), census
-            assert (
-                census["instance_attr_default_shadow_unique_type_keys"] == 0
-            ), census
-            assert (
-                census["instance_attr_default_unsupported_data_descriptor"] == 0
-            ), census
-            assert (
-                census[
-                    "instance_attr_default_data_descriptor_unique_owner_keys"
-                ]
-                == 0
-            ), census
-            assert (
-                census[
-                    "instance_attr_default_unsupported_non_data_descriptor"
-                ]
-                == 0
-            ), census
-            assert (
-                census["instance_attr_default_unsupported_type_attr_absent"] == 0
-            ), census
-            assert (
-                census["instance_attr_default_unsupported_other"] == 0
-            ), census
-            assert (
-                census["instance_attr_non_default_unique_types"] == 0
-            ), census
-            assert (
-                census["instance_attr_non_default_unique_slots"] == 0
-            ), census
-            assert census["instance_attr_unique_owners"] == 0, census
-            assert census["instance_attr_unique_types"] == 0, census
-            assert census["type_method_owner_proofs"] == 0, census
-            assert census["type_method_type_proofs"] == 0, census
-            assert census["type_method_owner_misses"] == 0, census
-            assert census["type_method_type_misses"] == 0, census
-            assert census["type_method_type_refreshes"] == 0, census
-            assert census["instance_attr_owner_proofs"] == 0, census
-            assert census["instance_attr_type_proofs"] == 0, census
-            assert census["instance_attr_owner_misses"] == 0, census
-            assert census["instance_attr_type_misses"] == 0, census
-            assert census["instance_attr_type_refreshes"] == 0, census
-            assert census["instance_attr_shadow_binding_records"] == 0, census
-            assert census["instance_attr_shadow_type_keys"] == 0, census
-            assert census["instance_attr_dynamic_binding_records"] == 0, census
-            assert census["instance_attr_dynamic_proofs"] == 0, census
-            assert census["instance_attr_dynamic_misses"] == 0, census
-            assert census["static_module_attr_binding_records"] == 0, census
-            assert census["static_module_attr_owner_proofs"] == 0, census
-            assert census["static_module_attr_type_proofs"] == 0, census
-            assert (
-                census["static_module_attr_owner_proofs_removed"] == 0
-            ), census
-            assert census["static_module_attr_owner_misses"] == 0, census
-            assert census["static_module_attr_type_misses"] == 0, census
-            assert (
-                census["static_module_dynamic_attr_binding_records"] == 0
-            ), census
-            assert census["static_module_dynamic_attr_proofs"] == 0, census
-            assert census["static_module_dynamic_attr_misses"] == 0, census
-            assert census["static_type_attr_binding_records"] == 0, census
-            assert census["static_type_attr_owner_proofs"] == 0, census
-            assert census["static_type_attr_type_proofs"] == 0, census
-            assert (
-                census["static_type_attr_owner_proofs_removed"] == 0
-            ), census
-            assert census["static_type_attr_owner_misses"] == 0, census
-            assert census["static_type_attr_type_misses"] == 0, census
-            assert (
-                census["static_type_dynamic_attr_binding_records"] == 0
-            ), census
-            assert census["static_type_dynamic_attr_proofs"] == 0, census
-            assert census["static_type_dynamic_attr_misses"] == 0, census
-            assert census["type_accessor_unique_owners"] == 0, census
-            assert census["type_accessor_unique_types"] == 0, census
-            assert census["code_accessor_unique_functions"] == 0, census
-            assert census["code_accessor_unique_codes"] == 0, census
-            assert (
-                census["type_accessor_any_proof_covered_owners"] == 0
-            ), census
-            assert census["type_accessor_uncovered_owners"] == 0, census
-            assert census["type_accessor_coverage_failures"] == 0, census
-            assert census["code_accessor_proofs"] == 0, census
-            assert census["code_accessor_misses"] == 0, census
-            assert census["unsupported_leaf_capabilities"] == 0, census
-            assert census["unsupported_accessor_capabilities"] == 0, census
-            assert census["equals_safe_constant_admissions"] == 0, census
-            assert census["equals_exact_set_token_emissions"] == 0, census
-            assert census["equals_exact_set_token_items"] == 0, census
-            assert census["equals_exact_set_token_max_size"] == 0, census
-            assert census["equals_exact_set_token_misses"] == 0, census
-            assert census["unsupported_equals_types"] == {}, census
-            assert (
-                sum(census["unsupported_leaf_capability_reasons"].values())
-                == 0
-            ), census
-            assert (
-                census["last_unsupported_leaf_capability_reason"] == "none"
-            ), census
-
-            class CustomGetattributeModel(torch.nn.Module):
-                def __init__(self):
-                    super().__init__()
-                    self.scale = torch.ones(2)
+                    self.scale = 1.0
 
                 def __getattribute__(self, name):
                     return object.__getattribute__(self, name)
 
                 def forward(self, x):
-                    return self.scale + x
+                    return x + self.scale
 
-            custom_counter = CompileCounter()
-            custom_compiled = torch.compile(
-                CustomGetattributeModel(),
-                backend=custom_counter,
-                fullgraph=True,
-            )
+            model = Model()
+            counter = CompileCounter()
+            compiled = torch.compile(model, backend=counter, fullgraph=True)
+            x = torch.zeros(2)
             for _ in range(8):
-                torch.testing.assert_close(
-                    custom_compiled(x), torch.ones(2)
-                )
-            assert custom_counter.frame_count == 1, custom_counter.frame_count
-            census = guards._get_guard_fast_plan_capability_census()
-            assert census["instance_attr_non_default_getattribute"] > 0, census
-            assert (
-                census["instance_attr_non_default_heap_type"]
-                + census["instance_attr_non_default_static_type"]
-                == census["instance_attr_non_default_getattribute"]
-            ), census
-            assert census["instance_attr_non_default_heap_type"] > 0, census
-            assert (
-                census["instance_attr_non_default_exact_dict_value"] > 0
-            ), census
-            assert (
-                census["instance_attr_non_default_type_attr_absent"] > 0
-            ), census
-            assert (
-                census["instance_attr_non_default_unique_types"] > 0
-            ), census
-            assert (
-                census["instance_attr_non_default_unique_slots"] > 0
-            ), census
-            assert (
-                census["instance_attr_binding_unsupported"]
-                >= census["instance_attr_non_default_getattribute"]
-            ), census
+                torch.testing.assert_close(compiled(x), torch.ones(2))
+            assert counter.frame_count == 1, counter.frame_count
+
+            model.scale = 2.0
+            torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+            assert counter.frame_count == 2, counter.frame_count
         """
         env = os.environ.copy()
         env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        env["TORCHDYNAMO_GUARD_FAST_PLAN_CAPABILITY_CENSUS"] = "1"
         subprocess.run(
             [sys.executable, "-c", textwrap.dedent(script)],
             cwd=os.getcwd(),
             env=env,
             check=True,
         )
-
     def test_actual_partial_retains_compiled_self_lifetime(self):
         script = """
             import gc
@@ -2127,7 +1807,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             import torch
             from torch._dynamo.testing import CompileCounter
 
-            guards = torch._C._dynamo.guards
             namespace = types.ModuleType("fastguard_test_namespace")
             namespace.scale = torch.ones(2)
 
@@ -2139,7 +1818,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 def forward(self, x):
                     return self.namespace.scale + x
 
-            guards._reset_guard_fast_plan_capability_census()
             model = Model()
             counter = CompileCounter()
             compiled = torch.compile(model, backend=counter, fullgraph=True)
@@ -2148,22 +1826,10 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 torch.testing.assert_close(compiled(x), torch.ones(2))
             assert counter.frame_count == 1, counter.frame_count
 
-            census = guards._get_guard_fast_plan_capability_census()
-            assert census["static_module_attr_binding_records"] > 0, census
-            assert census["static_module_attr_type_proofs"] > 0, census
-            assert census["instance_attr_non_default_exact_module"] > 0, census
-            assert census["static_module_attr_owner_misses"] == 0, census
-            assert census["static_module_attr_type_misses"] == 0, census
 
             namespace.scale = torch.full((2,), 3.0)
             torch.testing.assert_close(compiled(x), torch.full((2,), 3.0))
             assert counter.frame_count == 2, counter.frame_count
-            census = guards._get_guard_fast_plan_capability_census()
-            assert (
-                census["static_module_attr_owner_misses"]
-                + census["generic_dict_owner_misses"]
-                > 0
-            ), census
 
             dynamic_values = [torch.ones(2)]
 
@@ -2182,7 +1848,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 def forward(self, x):
                     return self.namespace.dynamic_scale + x
 
-            guards._reset_guard_fast_plan_capability_census()
             module_getattr_counter = CompileCounter()
             module_getattr_compiled = torch.compile(
                 ModuleGetattrModel(),
@@ -2193,12 +1858,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 torch.testing.assert_close(
                     module_getattr_compiled(x), torch.ones(2)
                 )
-            census = guards._get_guard_fast_plan_capability_census()
-            assert (
-                census["static_module_dynamic_attr_binding_records"] > 0
-            ), census
-            assert census["static_module_dynamic_attr_proofs"] > 0, census
-            assert census["static_module_dynamic_attr_misses"] == 0, census
 
             dynamic_values[0] = torch.full((2,), 4.0)
             torch.testing.assert_close(
@@ -2207,8 +1866,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             assert module_getattr_counter.frame_count == 2, (
                 module_getattr_counter.frame_count
             )
-            census = guards._get_guard_fast_plan_capability_census()
-            assert census["static_module_dynamic_attr_misses"] > 0, census
 
             class DynamicModule(types.ModuleType):
                 def __getattribute__(self, name):
@@ -2225,20 +1882,15 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 def forward(self, x):
                     return self.namespace.scale + x
 
-            guards._reset_guard_fast_plan_capability_census()
             dynamic_counter = CompileCounter()
             dynamic_compiled = torch.compile(
                 DynamicModel(), backend=dynamic_counter, fullgraph=True
             )
             for _ in range(8):
                 torch.testing.assert_close(dynamic_compiled(x), torch.ones(2))
-            census = guards._get_guard_fast_plan_capability_census()
-            assert census["static_module_attr_binding_records"] == 0, census
-            assert census["instance_attr_binding_unsupported"] > 0, census
         """
         env = os.environ.copy()
         env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        env["TORCHDYNAMO_GUARD_FAST_PLAN_CAPABILITY_CENSUS"] = "1"
         subprocess.run(
             [sys.executable, "-c", textwrap.dedent(script)],
             cwd=os.getcwd(),
@@ -2251,7 +1903,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             import torch
             from torch._dynamo.testing import CompileCounter
 
-            guards = torch._C._dynamo.guards
 
             class Namespace:
                 scale = torch.ones(2)
@@ -2264,28 +1915,16 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 def forward(self, x):
                     return self.namespace.scale + x
 
-            guards._reset_guard_fast_plan_capability_census()
             counter = CompileCounter()
             compiled = torch.compile(Model(), backend=counter, fullgraph=True)
             x = torch.zeros(2)
             for _ in range(8):
                 torch.testing.assert_close(compiled(x), torch.ones(2))
             assert counter.frame_count == 1, counter.frame_count
-            census = guards._get_guard_fast_plan_capability_census()
-            assert census["static_type_attr_binding_records"] > 0, census
-            assert census["static_type_attr_type_proofs"] > 0, census
-            assert census["static_type_attr_owner_misses"] == 0, census
-            assert census["static_type_attr_type_misses"] == 0, census
 
             Namespace.scale = torch.full((2,), 3.0)
             torch.testing.assert_close(compiled(x), torch.full((2,), 3.0))
             assert counter.frame_count == 2, counter.frame_count
-            census = guards._get_guard_fast_plan_capability_census()
-            assert (
-                census["static_type_attr_owner_misses"]
-                + census["generic_dict_owner_misses"]
-                > 0
-            ), census
 
             class Descriptor:
                 def __init__(self):
@@ -2307,27 +1946,18 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 def forward(self, x):
                     return self.namespace.scale + x
 
-            guards._reset_guard_fast_plan_capability_census()
             dynamic_counter = CompileCounter()
             dynamic_compiled = torch.compile(
                 DynamicModel(), backend=dynamic_counter, fullgraph=True
             )
             for _ in range(8):
                 torch.testing.assert_close(dynamic_compiled(x), torch.ones(2))
-            census = guards._get_guard_fast_plan_capability_census()
-            assert (
-                census["static_type_dynamic_attr_binding_records"] > 0
-            ), census
-            assert census["static_type_dynamic_attr_proofs"] > 0, census
-            assert census["static_type_dynamic_attr_misses"] == 0, census
 
             descriptor.value = torch.full((2,), 4.0)
             torch.testing.assert_close(
                 dynamic_compiled(x), torch.full((2,), 4.0)
             )
             assert dynamic_counter.frame_count == 2, dynamic_counter.frame_count
-            census = guards._get_guard_fast_plan_capability_census()
-            assert census["static_type_dynamic_attr_misses"] > 0, census
 
             class CustomMeta(type):
                 pass
@@ -2343,20 +1973,15 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 def forward(self, x):
                     return self.namespace.scale + x
 
-            guards._reset_guard_fast_plan_capability_census()
             custom_counter = CompileCounter()
             custom_compiled = torch.compile(
                 CustomModel(), backend=custom_counter, fullgraph=True
             )
             for _ in range(8):
                 torch.testing.assert_close(custom_compiled(x), torch.ones(2))
-            census = guards._get_guard_fast_plan_capability_census()
-            assert census["static_type_attr_binding_records"] == 0, census
-            assert census["instance_attr_binding_unsupported"] > 0, census
         """
         env = os.environ.copy()
         env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        env["TORCHDYNAMO_GUARD_FAST_PLAN_CAPABILITY_CENSUS"] = "1"
         subprocess.run(
             [sys.executable, "-c", textwrap.dedent(script)],
             cwd=os.getcwd(),
@@ -2379,8 +2004,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                         return x + 1
                     return x - 1
 
-            guards = torch._C._dynamo.guards
-            guards._reset_guard_fast_plan_capability_census()
             model = Model()
             counter = CompileCounter()
             compiled = torch.compile(model, backend=counter, fullgraph=True)
@@ -2389,19 +2012,13 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 torch.testing.assert_close(compiled(x), torch.ones(2))
             assert counter.frame_count == 1, counter.frame_count
 
-            census = guards._get_guard_fast_plan_capability_census()
-            assert census["equals_exact_set_token_emissions"] > 0, census
-            assert census["unsupported_leaf_capabilities"] == 0, census
 
             model.mode.add(3)
             torch.testing.assert_close(compiled(x), torch.full((2,), -1.0))
             assert counter.frame_count == 2, counter.frame_count
-            census = guards._get_guard_fast_plan_capability_census()
-            assert census["equals_exact_set_token_misses"] > 0, census
         """
         env = os.environ.copy()
         env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        env["TORCHDYNAMO_GUARD_FAST_PLAN_CAPABILITY_CENSUS"] = "1"
         subprocess.run(
             [sys.executable, "-c", textwrap.dedent(script)],
             cwd=os.getcwd(),
@@ -2421,8 +2038,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 def forward(self, x):
                     return self.helper(x)
 
-            guards = torch._C._dynamo.guards
-            guards._reset_guard_fast_plan_capability_census()
             counter = CompileCounter()
             model = Model()
             compiled = torch.compile(model, backend=counter, fullgraph=True)
@@ -2430,9 +2045,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             for _ in range(8):
                 torch.testing.assert_close(compiled(x), torch.ones(2))
             assert counter.frame_count == 1, counter.frame_count
-            stats = guards._get_guard_fast_plan_capability_census()
-            assert stats["code_accessor_proofs"] > 0, stats
-            assert stats["type_accessor_coverage_failures"] == 0, stats
 
             original_code = Model.helper.__code__
             try:
@@ -2442,14 +2054,11 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 Model.helper.__code__ = replacement.__code__
                 torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
                 assert counter.frame_count == 2, counter.frame_count
-                stats = guards._get_guard_fast_plan_capability_census()
-                assert stats["code_accessor_misses"] > 0, stats
             finally:
                 Model.helper.__code__ = original_code
         """
         env = os.environ.copy()
         env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        env["TORCHDYNAMO_GUARD_FAST_PLAN_CAPABILITY_CENSUS"] = "1"
         subprocess.run(
             [sys.executable, "-c", textwrap.dedent(script)],
             cwd=os.getcwd(),
@@ -2464,7 +2073,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             import torch
             from torch._dynamo.testing import CompileCounter
 
-            guards = torch._C._dynamo.guards
             GLOBAL_DICT = {"used": 1, "noise": [0]}
 
             def warm(compiled, x, expected):
@@ -2479,15 +2087,11 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 def forward(self, x):
                     return self.helper(x) + GLOBAL_DICT["used"]
 
-            guards._reset_guard_fast_plan_capability_census()
             model = InstanceShadowModel()
             counter = CompileCounter()
             compiled = torch.compile(model, backend=counter, fullgraph=True)
             x = torch.zeros(2)
             warm(compiled, x, torch.full((2,), 2.0))
-            census = guards._get_guard_fast_plan_capability_census()
-            assert census["type_method_owner_proofs"] > 0, census
-            assert census["type_method_type_proofs"] > 0, census
 
             def replacement(self, value):
                 return value + 4
@@ -2496,12 +2100,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             GLOBAL_DICT["noise"] = [100]
             torch.testing.assert_close(compiled(x), torch.full((2,), 5.0))
             assert counter.frame_count == 2, counter.frame_count
-            census = guards._get_guard_fast_plan_capability_census()
-            assert (
-                census["type_method_owner_misses"]
-                + census["generic_dict_owner_misses"]
-                > 0
-            ), census
 
             class ClassMutationModel(torch.nn.Module):
                 def helper(self, x):
@@ -2510,7 +2108,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 def forward(self, x):
                     return self.helper(x) + GLOBAL_DICT["used"]
 
-            guards._reset_guard_fast_plan_capability_census()
             class_model = ClassMutationModel()
             class_counter = CompileCounter()
             class_compiled = torch.compile(
@@ -2525,8 +2122,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                     class_compiled(x), torch.full((2,), 5.0)
                 )
                 assert class_counter.frame_count == 2, class_counter.frame_count
-                census = guards._get_guard_fast_plan_capability_census()
-                assert census["type_method_type_misses"] > 0, census
             finally:
                 ClassMutationModel.helper = original
 
@@ -2537,7 +2132,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 def forward(self, x):
                     return self.helper(x) + GLOBAL_DICT["used"]
 
-            guards._reset_guard_fast_plan_capability_census()
             refresh_model = RefreshModel()
             refresh_counter = CompileCounter()
             refresh_compiled = torch.compile(
@@ -2551,14 +2145,11 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                     refresh_compiled(x), torch.full((2,), 2.0)
                 )
                 assert refresh_counter.frame_count == 1, refresh_counter.frame_count
-                census = guards._get_guard_fast_plan_capability_census()
-                assert census["type_method_type_refreshes"] > 0, census
             finally:
                 del RefreshModel._fastguard_unrelated_type_change
         """
         env = os.environ.copy()
         env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        env["TORCHDYNAMO_GUARD_FAST_PLAN_CAPABILITY_CENSUS"] = "1"
         subprocess.run(
             [sys.executable, "-c", textwrap.dedent(script)],
             cwd=os.getcwd(),
@@ -2571,7 +2162,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             import torch
             from torch._dynamo.testing import CompileCounter
 
-            guards = torch._C._dynamo.guards
             GLOBAL_DICT = {"used": 1, "noise": [0]}
 
             def warm(compiled, x, expected):
@@ -2587,26 +2177,16 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 def forward(self, x):
                     return self.scale + x + GLOBAL_DICT["used"]
 
-            guards._reset_guard_fast_plan_capability_census()
             model = InstanceMutationModel()
             counter = CompileCounter()
             compiled = torch.compile(model, backend=counter, fullgraph=True)
             x = torch.zeros(2)
             warm(compiled, x, torch.full((2,), 2.0))
-            census = guards._get_guard_fast_plan_capability_census()
-            assert census["instance_attr_owner_proofs"] > 0, census
-            assert census["instance_attr_type_proofs"] > 0, census
 
             model.scale = torch.full((2,), 3.0)
             GLOBAL_DICT["noise"] = [100]
             torch.testing.assert_close(compiled(x), torch.full((2,), 4.0))
             assert counter.frame_count == 2, counter.frame_count
-            census = guards._get_guard_fast_plan_capability_census()
-            assert (
-                census["instance_attr_owner_misses"]
-                + census["generic_dict_owner_misses"]
-                > 0
-            ), census
 
             class DescriptorMutationModel(torch.nn.Module):
                 def __init__(self):
@@ -2616,7 +2196,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 def forward(self, x):
                     return self.scale + x + GLOBAL_DICT["used"]
 
-            guards._reset_guard_fast_plan_capability_census()
             descriptor_model = DescriptorMutationModel()
             descriptor_counter = CompileCounter()
             descriptor_compiled = torch.compile(
@@ -2634,8 +2213,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 assert descriptor_counter.frame_count == 2, (
                     descriptor_counter.frame_count
                 )
-                census = guards._get_guard_fast_plan_capability_census()
-                assert census["instance_attr_type_misses"] > 0, census
             finally:
                 del DescriptorMutationModel.scale
 
@@ -2649,16 +2226,12 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 def forward(self, x):
                     return self.scale + x + GLOBAL_DICT["used"]
 
-            guards._reset_guard_fast_plan_capability_census()
             shadow_model = ShadowValueModel()
             shadow_counter = CompileCounter()
             shadow_compiled = torch.compile(
                 shadow_model, backend=shadow_counter, fullgraph=True
             )
             warm(shadow_compiled, x, torch.full((2,), 2.0))
-            census = guards._get_guard_fast_plan_capability_census()
-            assert census["instance_attr_shadow_binding_records"] > 0, census
-            assert census["instance_attr_shadow_type_keys"] > 0, census
 
             ShadowValueModel.scale = property(
                 lambda self: torch.full((2,), 5.0)
@@ -2669,8 +2242,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                     shadow_compiled(x), torch.full((2,), 6.0)
                 )
                 assert shadow_counter.frame_count == 2, shadow_counter.frame_count
-                census = guards._get_guard_fast_plan_capability_census()
-                assert census["instance_attr_type_misses"] > 0, census
             finally:
                 ShadowValueModel.scale = None
 
@@ -2695,16 +2266,12 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 def forward(self, x):
                     return self.scale + x + GLOBAL_DICT["used"]
 
-            guards._reset_guard_fast_plan_capability_census()
             dynamic_model = DynamicDescriptorModel()
             dynamic_counter = CompileCounter()
             dynamic_compiled = torch.compile(
                 dynamic_model, backend=dynamic_counter, fullgraph=True
             )
             warm(dynamic_compiled, x, torch.full((2,), 2.0))
-            census = guards._get_guard_fast_plan_capability_census()
-            assert census["instance_attr_dynamic_binding_records"] > 0, census
-            assert census["instance_attr_dynamic_proofs"] > 0, census
 
             DynamicDescriptorModel.scale = property(
                 lambda self: torch.full((2,), 5.0)
@@ -2715,8 +2282,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                     dynamic_compiled(x), torch.full((2,), 6.0)
                 )
                 assert dynamic_counter.frame_count == 2, dynamic_counter.frame_count
-                census = guards._get_guard_fast_plan_capability_census()
-                assert census["instance_attr_dynamic_misses"] > 0, census
             finally:
                 DynamicDescriptorModel.scale = initial_scale_descriptor
 
@@ -2728,7 +2293,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 def forward(self, x):
                     return self.scale + x + GLOBAL_DICT["used"]
 
-            guards._reset_guard_fast_plan_capability_census()
             refresh_model = RefreshModel()
             refresh_counter = CompileCounter()
             refresh_compiled = torch.compile(
@@ -2742,14 +2306,11 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                     refresh_compiled(x), torch.full((2,), 2.0)
                 )
                 assert refresh_counter.frame_count == 1, refresh_counter.frame_count
-                census = guards._get_guard_fast_plan_capability_census()
-                assert census["instance_attr_type_refreshes"] > 0, census
             finally:
                 del RefreshModel._fastguard_unrelated_type_change
         """
         env = os.environ.copy()
         env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        env["TORCHDYNAMO_GUARD_FAST_PLAN_CAPABILITY_CENSUS"] = "1"
         subprocess.run(
             [sys.executable, "-c", textwrap.dedent(script)],
             cwd=os.getcwd(),
@@ -2762,7 +2323,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             import torch
             from torch._dynamo.testing import CompileCounter
 
-            guards = torch._C._dynamo.guards
             GLOBAL_DICT = {"used": 1, "noise": [0]}
 
             class FlakyDescriptor:
@@ -2792,7 +2352,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 def forward(self, x):
                     return self.scale + x + GLOBAL_DICT["used"]
 
-            guards._reset_guard_fast_plan_capability_census()
             counter = CompileCounter()
             compiled = torch.compile(Model(), backend=counter, fullgraph=True)
             x = torch.zeros(2)
@@ -2800,21 +2359,16 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 GLOBAL_DICT["noise"] = [i]
                 torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
             assert counter.frame_count == 1, counter.frame_count
-            census = guards._get_guard_fast_plan_capability_census()
-            assert census["instance_attr_dynamic_proofs"] > 0, census
 
             descriptor.fail_next = True
             GLOBAL_DICT["noise"] = [100]
             torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
-            census = guards._get_guard_fast_plan_capability_census()
-            assert census["instance_attr_dynamic_misses"] > 0, census
 
             GLOBAL_DICT["noise"] = [101]
             torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
         """
         env = os.environ.copy()
         env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        env["TORCHDYNAMO_GUARD_FAST_PLAN_CAPABILITY_CENSUS"] = "1"
         subprocess.run(
             [sys.executable, "-c", textwrap.dedent(script)],
             cwd=os.getcwd(),
@@ -2827,7 +2381,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             import torch
             from torch._dynamo.testing import CompileCounter
 
-            guards = torch._C._dynamo.guards
             GLOBAL_DICT = {"used": 1, "noise": [0]}
 
             class Holder:
@@ -2846,7 +2399,6 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                         + GLOBAL_DICT["used"]
                     )
 
-            guards._reset_guard_fast_plan_capability_census()
             model = Model()
             counter = CompileCounter()
             compiled = torch.compile(model, backend=counter, fullgraph=True)
@@ -2855,19 +2407,13 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 GLOBAL_DICT["noise"] = [i]
                 torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
             assert counter.frame_count == 1, counter.frame_count
-            census = guards._get_guard_fast_plan_capability_census()
-            assert census["generic_dict_owner_proofs"] > 0, census
-            assert census["generic_dict_exact_dict_tokens_removed"] > 0, census
 
             model.holder.__dict__ = dict(model.holder.__dict__)
             GLOBAL_DICT["noise"] = [100]
             torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
-            census = guards._get_guard_fast_plan_capability_census()
-            assert census["generic_dict_owner_misses"] > 0, census
         """
         env = os.environ.copy()
         env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        env["TORCHDYNAMO_GUARD_FAST_PLAN_CAPABILITY_CENSUS"] = "1"
         subprocess.run(
             [sys.executable, "-c", textwrap.dedent(script)],
             cwd=os.getcwd(),

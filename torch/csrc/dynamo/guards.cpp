@@ -155,181 +155,6 @@ enum class GuardSubtreeProbeTokenKind : uint8_t {
 constexpr size_t kGuardLastSuccessActualMaxTokens = 65536;
 constexpr uint64_t kGuardLastSuccessActualStablePasses = 3;
 
-enum class GuardActualPartialAccessorCensusKind : uint8_t {
-  Other,
-  GetAttr,
-  GenericGetAttr,
-  GetGenericDict,
-  FrameLocals,
-  DictGetItem,
-  ListGetItem,
-  TupleGetItem,
-  GetItem,
-  SetGetItem,
-  TensorProperty,
-  Indexed,
-  Grad,
-  FuncDefaults,
-  FuncKwDefaults,
-  Globals,
-  Type,
-  TypeDict,
-  TypeMRO,
-  TupleIteratorGetItem,
-  GlobalWeakRef,
-  WeakRefCall,
-  Code,
-  Closure,
-  CallFunctionNoArgs,
-  PythonLambda,
-};
-
-enum class GuardActualPartialLeafCapabilityReason : uint8_t {
-  None,
-  UnknownGuard,
-  LambdaGuard,
-  EqualsNotDeeplyImmutable,
-  RangeIteratorMatch,
-  TupleIteratorLen,
-  LengthNonExactSequence,
-  DictLengthNonExactDict,
-  MappingKeysNonExactDict,
-  DictContainsNonExactDict,
-  SetContains,
-  DualLevelMatch,
-  StorageOverlapping,
-  SymbolicShapeGuard,
-  DynamicIndices,
-  DictVersionNonExactDict,
-  DispatchKeySetMatch,
-  Count,
-};
-
-struct GuardActualPartialCapabilityCensus {
-  uint64_t leaf_observations{0};
-  uint64_t leaf_token_emitters{0};
-  uint64_t leaf_without_tokens{0};
-  uint64_t no_hasattr_leaf_observations{0};
-  uint64_t accessor_observations{0};
-  uint64_t get_attr_accessors{0};
-  uint64_t generic_get_attr_accessors{0};
-  uint64_t get_generic_dict_accessors{0};
-  uint64_t frame_locals_accessors{0};
-  uint64_t dict_getitem_accessors{0};
-  uint64_t list_getitem_accessors{0};
-  uint64_t tuple_getitem_accessors{0};
-  uint64_t get_item_accessors{0};
-  uint64_t set_getitem_accessors{0};
-  uint64_t tensor_property_accessors{0};
-  uint64_t indexed_accessors{0};
-  uint64_t grad_accessors{0};
-  uint64_t func_defaults_accessors{0};
-  uint64_t func_kw_defaults_accessors{0};
-  uint64_t globals_accessors{0};
-  uint64_t type_accessors{0};
-  uint64_t type_dict_accessors{0};
-  uint64_t type_mro_accessors{0};
-  uint64_t tuple_iterator_getitem_accessors{0};
-  uint64_t global_weakref_accessors{0};
-  uint64_t weakref_call_accessors{0};
-  uint64_t code_accessors{0};
-  uint64_t closure_accessors{0};
-  uint64_t call_function_no_args_accessors{0};
-  uint64_t python_lambda_accessors{0};
-  uint64_t other_accessors{0};
-  uint64_t type_accessor_unique_owners{0};
-  uint64_t type_accessor_unique_types{0};
-  uint64_t code_accessor_function_observations{0};
-  uint64_t code_accessor_bound_method_observations{0};
-  uint64_t code_accessor_instance_method_observations{0};
-  uint64_t code_accessor_unsupported_observations{0};
-  uint64_t code_accessor_unique_functions{0};
-  uint64_t code_accessor_unique_codes{0};
-  uint64_t owner_path_records{0};
-  uint64_t owner_path_unique_records{0};
-  uint64_t generic_dict_binding_records{0};
-  uint64_t generic_dict_binding_unsupported{0};
-  uint64_t generic_dict_unique_owners{0};
-  uint64_t generic_dict_owner_proofs{0};
-  uint64_t generic_dict_owner_misses{0};
-  uint64_t generic_dict_exact_dict_tokens_removed{0};
-  uint64_t generic_dict_accessor_owner_proofs_removed{0};
-  uint64_t instance_attr_binding_records{0};
-  uint64_t type_method_binding_records{0};
-  uint64_t instance_attr_binding_unsupported{0};
-  uint64_t instance_attr_non_default_getattribute{0};
-  uint64_t instance_attr_non_default_heap_type{0};
-  uint64_t instance_attr_non_default_static_type{0};
-  uint64_t instance_attr_non_default_exact_tensor{0};
-  uint64_t instance_attr_non_default_exact_module{0};
-  uint64_t instance_attr_non_default_exact_type_object{0};
-  uint64_t instance_attr_non_default_exact_dict_value{0};
-  uint64_t instance_attr_non_default_type_attr_absent{0};
-  uint64_t instance_attr_default_unsupported{0};
-  uint64_t instance_attr_default_unsupported_non_unicode_key{0};
-  uint64_t instance_attr_default_unsupported_type_version{0};
-  uint64_t instance_attr_default_unsupported_instance_dict_shadow{0};
-  uint64_t instance_attr_default_shadow_plain_value{0};
-  uint64_t instance_attr_default_shadow_static_non_data_descriptor{0};
-  uint64_t instance_attr_default_shadow_heap_non_data_descriptor{0};
-  uint64_t instance_attr_default_unsupported_data_descriptor{0};
-  uint64_t instance_attr_default_unsupported_non_data_descriptor{0};
-  uint64_t instance_attr_default_unsupported_type_attr_absent{0};
-  uint64_t instance_attr_default_unsupported_other{0};
-  uint64_t instance_attr_unique_owners{0};
-  uint64_t instance_attr_unique_types{0};
-  uint64_t type_method_owner_proofs{0};
-  uint64_t type_method_type_proofs{0};
-  uint64_t type_method_owner_misses{0};
-  uint64_t type_method_type_misses{0};
-  uint64_t type_method_type_refreshes{0};
-  uint64_t instance_attr_owner_proofs{0};
-  uint64_t instance_attr_type_proofs{0};
-  uint64_t instance_attr_owner_misses{0};
-  uint64_t instance_attr_type_misses{0};
-  uint64_t instance_attr_type_refreshes{0};
-  uint64_t instance_attr_shadow_binding_records{0};
-  uint64_t instance_attr_shadow_type_keys{0};
-  uint64_t instance_attr_dynamic_binding_records{0};
-  uint64_t instance_attr_dynamic_proofs{0};
-  uint64_t instance_attr_dynamic_misses{0};
-  uint64_t static_module_attr_binding_records{0};
-  uint64_t static_module_attr_owner_proofs{0};
-  uint64_t static_module_attr_type_proofs{0};
-  uint64_t static_module_attr_owner_proofs_removed{0};
-  uint64_t static_module_attr_owner_misses{0};
-  uint64_t static_module_attr_type_misses{0};
-  uint64_t static_module_dynamic_attr_binding_records{0};
-  uint64_t static_module_dynamic_attr_proofs{0};
-  uint64_t static_module_dynamic_attr_misses{0};
-  uint64_t static_type_attr_binding_records{0};
-  uint64_t static_type_attr_owner_proofs{0};
-  uint64_t static_type_attr_type_proofs{0};
-  uint64_t static_type_attr_owner_proofs_removed{0};
-  uint64_t static_type_attr_owner_misses{0};
-  uint64_t static_type_attr_type_misses{0};
-  uint64_t static_type_dynamic_attr_binding_records{0};
-  uint64_t static_type_dynamic_attr_proofs{0};
-  uint64_t static_type_dynamic_attr_misses{0};
-  uint64_t type_accessor_coverage_failures{0};
-  uint64_t code_accessor_proofs{0};
-  uint64_t code_accessor_misses{0};
-  uint64_t unsupported_leaf_capabilities{0};
-  uint64_t unsupported_accessor_capabilities{0};
-  uint64_t equals_safe_constant_admissions{0};
-  uint64_t equals_exact_set_token_emissions{0};
-  uint64_t equals_exact_set_token_items{0};
-  uint64_t equals_exact_set_token_max_size{0};
-  uint64_t equals_exact_set_token_misses{0};
-  std::unordered_map<std::string, uint64_t> unsupported_equals_types;
-  std::array<
-      uint64_t,
-      static_cast<size_t>(GuardActualPartialLeafCapabilityReason::Count)>
-      unsupported_leaf_capability_reasons{};
-  GuardActualPartialLeafCapabilityReason last_unsupported_leaf_reason{
-      GuardActualPartialLeafCapabilityReason::None};
-};
-
 enum class GuardActualPartialAccessorRecordKind : uint8_t {
   GenericDictBinding,
   InstanceAttrBinding,
@@ -343,6 +168,12 @@ enum class GuardActualPartialAccessorRecordKind : uint8_t {
   UnsupportedInstanceAttrBinding,
   TypeAccessor,
   CodeAccessor,
+};
+
+enum class GuardActualPartialSpecialAccessorKind : uint8_t {
+  None,
+  Type,
+  Code,
 };
 
 struct GuardActualPartialAccessorRecord {
@@ -622,57 +453,9 @@ struct GuardSubtreeKnownStaticDynamicAttrProof {
   }
 };
 
-thread_local GuardActualPartialCapabilityCensus
-    guard_actual_partial_capability_census;
-thread_local std::unordered_set<PyObject*>
-    guard_actual_partial_type_accessor_owners;
-thread_local std::unordered_set<PyTypeObject*>
-    guard_actual_partial_type_accessor_types;
-thread_local std::unordered_set<PyObject*>
-    guard_actual_partial_code_accessor_functions;
-thread_local std::unordered_set<PyObject*>
-    guard_actual_partial_code_accessor_codes;
-thread_local std::unordered_set<PyObject*>
-    guard_actual_partial_type_accessor_generic_dict_covered;
-thread_local std::unordered_set<PyObject*>
-    guard_actual_partial_type_accessor_instance_attr_covered;
-thread_local std::unordered_set<PyObject*>
-    guard_actual_partial_type_accessor_type_method_covered;
-thread_local std::unordered_set<PyObject*>
-    guard_actual_partial_type_accessor_any_proof_covered;
-thread_local std::unordered_set<PyTypeObject*>
-    guard_actual_partial_non_default_getattribute_types;
-thread_local std::vector<getattrofunc>
-    guard_actual_partial_non_default_getattribute_slots;
-thread_local std::vector<std::pair<PyObject*, PyObject*>>
-    guard_actual_partial_default_shadow_owner_keys;
-thread_local std::vector<std::pair<PyObject*, PyObject*>>
-    guard_actual_partial_default_shadow_type_keys;
-thread_local std::vector<std::pair<PyObject*, PyObject*>>
-    guard_actual_partial_default_data_descriptor_owner_keys;
-
-static void guard_actual_partial_record_unique_pointer_pair(
-    std::vector<std::pair<PyObject*, PyObject*>>& pairs,
-    PyObject* first,
-    PyObject* second) {
-  const auto pair = std::make_pair(first, second);
-  if (std::find(pairs.begin(), pairs.end(), pair) == pairs.end()) {
-    pairs.push_back(pair);
-  }
-}
-
 static bool guard_fast_plan_enabled() {
   static const bool env_enabled =
       c10::utils::check_env("TORCHDYNAMO_GUARD_FAST_PLAN") == true;
-  return C10_UNLIKELY(env_enabled);
-}
-
-static bool guard_fast_plan_capability_census_enabled() {
-  // This diagnostic records only coarse categories during full-guard training;
-  // it never changes actual-partial plan admission or emits model identities.
-  static const bool env_enabled =
-      c10::utils::check_env(
-          "TORCHDYNAMO_GUARD_FAST_PLAN_CAPABILITY_CENSUS") == true;
   return C10_UNLIKELY(env_enabled);
 }
 
@@ -2281,10 +2064,6 @@ static bool guard_last_success_build_generic_dict_proofs(
     proof_index_by_owner.emplace(record.owner_ptr, owner_proofs.size());
     owner_proofs.push_back(std::move(proof));
   }
-  if (guard_fast_plan_capability_census_enabled()) {
-    guard_actual_partial_capability_census.generic_dict_owner_proofs +=
-        owner_proofs.size();
-  }
   return true;
 }
 
@@ -2306,7 +2085,6 @@ static void guard_last_success_fold_generic_dict_proofs(
     proven_dicts.insert(proof.dict.ptr());
   }
 
-  const size_t old_type_method_size = type_method_owner_proofs.size();
   type_method_owner_proofs.erase(
       std::remove_if(
           type_method_owner_proofs.begin(),
@@ -2315,7 +2093,6 @@ static void guard_last_success_fold_generic_dict_proofs(
             return proven_owners.find(proof.owner_ptr) != proven_owners.end();
           }),
       type_method_owner_proofs.end());
-  const size_t old_instance_attr_size = instance_attr_owner_proofs.size();
   instance_attr_owner_proofs.erase(
       std::remove_if(
           instance_attr_owner_proofs.begin(),
@@ -2324,14 +2101,6 @@ static void guard_last_success_fold_generic_dict_proofs(
             return proven_owners.find(proof.owner_ptr) != proven_owners.end();
           }),
       instance_attr_owner_proofs.end());
-  const size_t old_static_module_attr_size = std::count_if(
-      static_module_attr_owner_proofs.begin(),
-      static_module_attr_owner_proofs.end(),
-      [](const GuardSubtreeKnownStaticAttrOwnerProof& proof) {
-        return proof.owner_type == &PyModule_Type;
-      });
-  const size_t old_static_type_attr_size =
-      static_module_attr_owner_proofs.size() - old_static_module_attr_size;
   static_module_attr_owner_proofs.erase(
       std::remove_if(
           static_module_attr_owner_proofs.begin(),
@@ -2341,7 +2110,6 @@ static void guard_last_success_fold_generic_dict_proofs(
             return proven_owners.find(proof.owner_ptr) != proven_owners.end();
           }),
       static_module_attr_owner_proofs.end());
-  const size_t old_hot_token_size = hot_tokens.size();
   hot_tokens.erase(
       std::remove_if(
           hot_tokens.begin(),
@@ -2352,27 +2120,6 @@ static void guard_last_success_fold_generic_dict_proofs(
           }),
       hot_tokens.end());
 
-  if (guard_fast_plan_capability_census_enabled()) {
-    auto& census = guard_actual_partial_capability_census;
-    const size_t new_static_module_attr_size = std::count_if(
-        static_module_attr_owner_proofs.begin(),
-        static_module_attr_owner_proofs.end(),
-        [](const GuardSubtreeKnownStaticAttrOwnerProof& proof) {
-          return proof.owner_type == &PyModule_Type;
-        });
-    const size_t new_static_type_attr_size =
-        static_module_attr_owner_proofs.size() -
-        new_static_module_attr_size;
-    census.generic_dict_accessor_owner_proofs_removed +=
-        old_type_method_size - type_method_owner_proofs.size() +
-        old_instance_attr_size - instance_attr_owner_proofs.size();
-    census.static_module_attr_owner_proofs_removed +=
-        old_static_module_attr_size - new_static_module_attr_size;
-    census.static_type_attr_owner_proofs_removed +=
-        old_static_type_attr_size - new_static_type_attr_size;
-    census.generic_dict_exact_dict_tokens_removed +=
-        old_hot_token_size - hot_tokens.size();
-  }
 }
 
 static bool guard_last_success_build_type_method_proofs(
@@ -2460,11 +2207,6 @@ static bool guard_last_success_build_type_method_proofs(
       binding.expected = record.resolved;
       type_proof->bindings.push_back(std::move(binding));
     }
-  }
-  if (guard_fast_plan_capability_census_enabled()) {
-    auto& census = guard_actual_partial_capability_census;
-    census.type_method_owner_proofs += owner_proofs.size();
-    census.type_method_type_proofs += type_proofs.size();
   }
   return true;
 }
@@ -2568,16 +2310,7 @@ static bool guard_last_success_build_instance_attr_proofs(
         binding.expected = record.type_attr;
       }
       type_proof->bindings.push_back(std::move(binding));
-      if (shadow_binding && guard_fast_plan_capability_census_enabled()) {
-        ++guard_actual_partial_capability_census
-              .instance_attr_shadow_type_keys;
-      }
     }
-  }
-  if (guard_fast_plan_capability_census_enabled()) {
-    auto& census = guard_actual_partial_capability_census;
-    census.instance_attr_owner_proofs += owner_proofs.size();
-    census.instance_attr_type_proofs += type_proofs.size();
   }
   return true;
 }
@@ -2634,10 +2367,6 @@ static bool guard_last_success_build_instance_attr_dynamic_proofs(
       proof.owner_is_self = true;
     }
     dynamic_proofs.push_back(std::move(proof));
-  }
-  if (guard_fast_plan_capability_census_enabled()) {
-    guard_actual_partial_capability_census.instance_attr_dynamic_proofs +=
-        dynamic_proofs.size();
   }
   return true;
 }
@@ -2761,30 +2490,6 @@ static bool guard_last_success_build_known_static_attr_proofs(
       owner_proofs.push_back(std::move(proof));
     }
   }
-  if (guard_fast_plan_capability_census_enabled()) {
-    auto& census = guard_actual_partial_capability_census;
-    for (const auto& proof : owner_proofs) {
-      if (proof.owner_type == &PyModule_Type) {
-        ++census.static_module_attr_owner_proofs;
-      } else {
-        ++census.static_type_attr_owner_proofs;
-      }
-    }
-    for (const auto& proof : type_proofs) {
-      if (proof.type.ptr() == reinterpret_cast<PyObject*>(&PyModule_Type)) {
-        ++census.static_module_attr_type_proofs;
-      } else {
-        ++census.static_type_attr_type_proofs;
-      }
-    }
-    for (const auto& proof : dynamic_proofs) {
-      if (proof.owner_type == &PyModule_Type) {
-        ++census.static_module_dynamic_attr_proofs;
-      } else {
-        ++census.static_type_dynamic_attr_proofs;
-      }
-    }
-  }
   return true;
 }
 
@@ -2821,10 +2526,6 @@ static bool guard_last_success_type_accessors_are_covered(
     if (record.owner_ptr == nullptr || record.owner_type == nullptr ||
         Py_TYPE(record.owner_ptr) != record.owner_type ||
         covered_owners.find(record.owner_ptr) == covered_owners.end()) {
-      if (guard_fast_plan_capability_census_enabled()) {
-        ++guard_actual_partial_capability_census
-              .type_accessor_coverage_failures;
-      }
       return false;
     }
   }
@@ -2859,10 +2560,6 @@ static bool guard_last_success_build_code_accessor_proofs(
     proof.code = record.resolved;
     proof_index_by_function.emplace(record.owner_ptr, proofs.size());
     proofs.push_back(std::move(proof));
-  }
-  if (guard_fast_plan_capability_census_enabled()) {
-    guard_actual_partial_capability_census.code_accessor_proofs +=
-        proofs.size();
   }
   return true;
 }
@@ -3156,10 +2853,6 @@ static bool guard_subtree_exact_set_equals_token_matches_current(
   if (result < 0) {
     PyErr_Clear();
     return false;
-  }
-  if (result == 0 && guard_fast_plan_capability_census_enabled()) {
-    ++guard_actual_partial_capability_census
-          .equals_exact_set_token_misses;
   }
   return result == 1;
 }
@@ -3506,109 +3199,53 @@ static bool guard_last_success_actual_partial_tokens_match(
   }
   for (const auto& proof : plan.generic_dict_owner_proofs) {
     if (!proof.matches_current(current_self)) {
-      if (guard_fast_plan_capability_census_enabled()) {
-        ++guard_actual_partial_capability_census.generic_dict_owner_misses;
-      }
       return false;
     }
   }
   for (auto& proof : plan.type_method_type_proofs) {
     bool refreshed = false;
     if (!proof.matches_or_refreshes_current(refreshed)) {
-      if (guard_fast_plan_capability_census_enabled()) {
-        ++guard_actual_partial_capability_census.type_method_type_misses;
-      }
       return false;
-    }
-    if (refreshed && guard_fast_plan_capability_census_enabled()) {
-      ++guard_actual_partial_capability_census.type_method_type_refreshes;
     }
   }
   for (const auto& proof : plan.type_method_owner_proofs) {
     if (!proof.matches_current(current_self)) {
-      if (guard_fast_plan_capability_census_enabled()) {
-        ++guard_actual_partial_capability_census.type_method_owner_misses;
-      }
       return false;
     }
   }
   for (auto& proof : plan.instance_attr_type_proofs) {
     bool refreshed = false;
     if (!proof.matches_or_refreshes_current(refreshed)) {
-      if (guard_fast_plan_capability_census_enabled()) {
-        ++guard_actual_partial_capability_census.instance_attr_type_misses;
-      }
       return false;
-    }
-    if (refreshed && guard_fast_plan_capability_census_enabled()) {
-      ++guard_actual_partial_capability_census.instance_attr_type_refreshes;
     }
   }
   for (const auto& proof : plan.instance_attr_owner_proofs) {
     if (!proof.matches_current(current_self)) {
-      if (guard_fast_plan_capability_census_enabled()) {
-        ++guard_actual_partial_capability_census.instance_attr_owner_misses;
-      }
       return false;
     }
   }
   for (const auto& proof : plan.instance_attr_dynamic_proofs) {
     if (!proof.matches_current(current_self)) {
-      if (guard_fast_plan_capability_census_enabled()) {
-        ++guard_actual_partial_capability_census
-              .instance_attr_dynamic_misses;
-      }
       return false;
     }
   }
   for (const auto& proof : plan.static_module_attr_type_proofs) {
     if (!proof.matches_current()) {
-      if (guard_fast_plan_capability_census_enabled()) {
-        if (proof.type.ptr() ==
-            reinterpret_cast<PyObject*>(&PyModule_Type)) {
-          ++guard_actual_partial_capability_census
-                .static_module_attr_type_misses;
-        } else {
-          ++guard_actual_partial_capability_census
-                .static_type_attr_type_misses;
-        }
-      }
       return false;
     }
   }
   for (const auto& proof : plan.static_module_attr_owner_proofs) {
     if (!proof.matches_current(current_self)) {
-      if (guard_fast_plan_capability_census_enabled()) {
-        if (proof.owner_type == &PyModule_Type) {
-          ++guard_actual_partial_capability_census
-                .static_module_attr_owner_misses;
-        } else {
-          ++guard_actual_partial_capability_census
-                .static_type_attr_owner_misses;
-        }
-      }
       return false;
     }
   }
   for (const auto& proof : plan.static_module_dynamic_attr_proofs) {
     if (!proof.matches_current()) {
-      if (guard_fast_plan_capability_census_enabled()) {
-        if (proof.owner_type == &PyModule_Type) {
-          ++guard_actual_partial_capability_census
-                .static_module_dynamic_attr_misses;
-        } else {
-          ++guard_actual_partial_capability_census
-                .static_type_dynamic_attr_misses;
-        }
-      }
       return false;
     }
   }
   for (const auto& proof : plan.code_accessor_proofs) {
     if (!proof.matches_current()) {
-      if (guard_fast_plan_capability_census_enabled()) {
-        ++guard_actual_partial_capability_census.code_accessor_misses;
-      }
       return false;
     }
   }
@@ -3625,162 +3262,6 @@ thread_local std::vector<GuardActualPartialAccessorRecord>*
 thread_local bool* active_guard_actual_partial_supported = nullptr;
 thread_local int active_guard_actual_partial_self_depth = 0;
 thread_local bool active_guard_subtree_memo_relax_global_dicts = false;
-
-static void guard_actual_partial_record_leaf_capability(
-    bool emits_token,
-    bool is_no_hasattr) {
-  if (!guard_fast_plan_capability_census_enabled()) {
-    return;
-  }
-  auto& census = guard_actual_partial_capability_census;
-  ++census.leaf_observations;
-  if (emits_token) {
-    ++census.leaf_token_emitters;
-  } else {
-    ++census.leaf_without_tokens;
-  }
-  if (is_no_hasattr) {
-    ++census.no_hasattr_leaf_observations;
-  }
-}
-
-static void guard_actual_partial_record_accessor_capability(
-    GuardActualPartialAccessorCensusKind kind,
-    PyObject* parent) {
-  if (!guard_fast_plan_capability_census_enabled()) {
-    return;
-  }
-  auto& census = guard_actual_partial_capability_census;
-  ++census.accessor_observations;
-  switch (kind) {
-    case GuardActualPartialAccessorCensusKind::GetAttr:
-      ++census.get_attr_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::GenericGetAttr:
-      ++census.generic_get_attr_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::GetGenericDict:
-      ++census.get_generic_dict_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::FrameLocals:
-      ++census.frame_locals_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::DictGetItem:
-      ++census.dict_getitem_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::ListGetItem:
-      ++census.list_getitem_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::TupleGetItem:
-      ++census.tuple_getitem_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::GetItem:
-      ++census.get_item_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::SetGetItem:
-      ++census.set_getitem_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::TensorProperty:
-      ++census.tensor_property_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::Indexed:
-      ++census.indexed_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::Grad:
-      ++census.grad_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::FuncDefaults:
-      ++census.func_defaults_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::FuncKwDefaults:
-      ++census.func_kw_defaults_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::Globals:
-      ++census.globals_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::Type:
-      ++census.type_accessors;
-      if (parent != nullptr) {
-        if (guard_actual_partial_type_accessor_owners.insert(parent).second) {
-          ++census.type_accessor_unique_owners;
-        }
-        if (guard_actual_partial_type_accessor_types
-                .insert(Py_TYPE(parent))
-                .second) {
-          ++census.type_accessor_unique_types;
-        }
-      }
-      break;
-    case GuardActualPartialAccessorCensusKind::TypeDict:
-      ++census.type_dict_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::TypeMRO:
-      ++census.type_mro_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::TupleIteratorGetItem:
-      ++census.tuple_iterator_getitem_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::GlobalWeakRef:
-      ++census.global_weakref_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::WeakRefCall:
-      ++census.weakref_call_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::Code:
-      ++census.code_accessors;
-      if (parent != nullptr) {
-        PyObject* function = parent;
-        bool is_bound_method = false;
-        bool is_instance_method = false;
-        if (PyMethod_Check(parent)) {
-          is_bound_method = true;
-          function = PyMethod_GET_FUNCTION(parent);
-        } else if (PyInstanceMethod_Check(parent)) {
-          is_instance_method = true;
-          function = PyInstanceMethod_GET_FUNCTION(parent);
-        } else if (!PyFunction_Check(parent)) {
-          ++census.code_accessor_unsupported_observations;
-          break;
-        }
-        PyObject* code = PyFunction_GetCode(function);
-        if (code == nullptr) {
-          PyErr_Clear();
-          ++census.code_accessor_unsupported_observations;
-          break;
-        }
-        if (is_bound_method) {
-          ++census.code_accessor_bound_method_observations;
-        } else if (is_instance_method) {
-          ++census.code_accessor_instance_method_observations;
-        } else {
-          ++census.code_accessor_function_observations;
-        }
-        if (guard_actual_partial_code_accessor_functions
-                .insert(function)
-                .second) {
-          ++census.code_accessor_unique_functions;
-        }
-        if (guard_actual_partial_code_accessor_codes.insert(code).second) {
-          ++census.code_accessor_unique_codes;
-        }
-      } else {
-        ++census.code_accessor_unsupported_observations;
-      }
-      break;
-    case GuardActualPartialAccessorCensusKind::Closure:
-      ++census.closure_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::CallFunctionNoArgs:
-      ++census.call_function_no_args_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::PythonLambda:
-      ++census.python_lambda_accessors;
-      break;
-    case GuardActualPartialAccessorCensusKind::Other:
-      ++census.other_accessors;
-      break;
-  }
-}
 
 static bool guard_actual_partial_is_recording_source(
     const std::string& source);
@@ -3811,15 +3292,6 @@ static void guard_actual_partial_record_generic_dict_binding(
   record.exact_owner_dict = exact_owner_dict;
   active_guard_actual_partial_accessor_records->push_back(std::move(record));
 
-  if (guard_fast_plan_capability_census_enabled()) {
-    auto& census = guard_actual_partial_capability_census;
-    ++census.owner_path_records;
-    if (exact_owner_dict) {
-      ++census.generic_dict_binding_records;
-    } else {
-      ++census.generic_dict_binding_unsupported;
-    }
-  }
 }
 
 static bool guard_actual_partial_uses_default_getattribute(
@@ -3960,584 +3432,6 @@ static void guard_actual_partial_record_instance_attr_binding(
   }
   active_guard_actual_partial_accessor_records->push_back(std::move(record));
 
-  if (guard_fast_plan_capability_census_enabled()) {
-    auto& census = guard_actual_partial_capability_census;
-    ++census.owner_path_records;
-    if (direct_instance_binding && type_version_ready) {
-      ++census.instance_attr_binding_records;
-    } else if (instance_attr_shadow_binding && type_version_ready) {
-      ++census.instance_attr_shadow_binding_records;
-    } else if (instance_attr_dynamic_binding) {
-      ++census.instance_attr_dynamic_binding_records;
-    } else if (type_method_binding && type_version_ready) {
-      ++census.type_method_binding_records;
-    } else if (static_module_attr_binding) {
-      ++census.static_module_attr_binding_records;
-      ++census.instance_attr_non_default_getattribute;
-      ++census.instance_attr_non_default_static_type;
-      ++census.instance_attr_non_default_exact_module;
-      ++census.instance_attr_non_default_exact_dict_value;
-      if (type_attr == nullptr) {
-        ++census.instance_attr_non_default_type_attr_absent;
-      }
-      guard_actual_partial_non_default_getattribute_types.insert(
-          record.owner_type);
-      const getattrofunc slot = record.owner_type->tp_getattro;
-      if (std::find(
-              guard_actual_partial_non_default_getattribute_slots.begin(),
-              guard_actual_partial_non_default_getattribute_slots.end(),
-              slot) ==
-          guard_actual_partial_non_default_getattribute_slots.end()) {
-        guard_actual_partial_non_default_getattribute_slots.push_back(slot);
-      }
-    } else if (static_module_dynamic_attr_binding) {
-      ++census.static_module_dynamic_attr_binding_records;
-      ++census.instance_attr_non_default_getattribute;
-      ++census.instance_attr_non_default_static_type;
-      ++census.instance_attr_non_default_exact_module;
-      ++census.instance_attr_non_default_type_attr_absent;
-      guard_actual_partial_non_default_getattribute_types.insert(
-          record.owner_type);
-      const getattrofunc slot = record.owner_type->tp_getattro;
-      if (std::find(
-              guard_actual_partial_non_default_getattribute_slots.begin(),
-              guard_actual_partial_non_default_getattribute_slots.end(),
-              slot) ==
-          guard_actual_partial_non_default_getattribute_slots.end()) {
-        guard_actual_partial_non_default_getattribute_slots.push_back(slot);
-      }
-    } else if (static_type_attr_binding) {
-      ++census.static_type_attr_binding_records;
-      ++census.instance_attr_non_default_getattribute;
-      ++census.instance_attr_non_default_static_type;
-      ++census.instance_attr_non_default_exact_type_object;
-      ++census.instance_attr_non_default_exact_dict_value;
-      if (type_attr == nullptr) {
-        ++census.instance_attr_non_default_type_attr_absent;
-      }
-      guard_actual_partial_non_default_getattribute_types.insert(
-          record.owner_type);
-      const getattrofunc slot = record.owner_type->tp_getattro;
-      if (std::find(
-              guard_actual_partial_non_default_getattribute_slots.begin(),
-              guard_actual_partial_non_default_getattribute_slots.end(),
-              slot) ==
-          guard_actual_partial_non_default_getattribute_slots.end()) {
-        guard_actual_partial_non_default_getattribute_slots.push_back(slot);
-      }
-    } else if (static_type_dynamic_attr_binding) {
-      ++census.static_type_dynamic_attr_binding_records;
-      ++census.instance_attr_non_default_getattribute;
-      ++census.instance_attr_non_default_static_type;
-      ++census.instance_attr_non_default_exact_type_object;
-      if (exact_owner_dict &&
-          PyDict_GetItem(*dictptr, key) == expected) {
-        ++census.instance_attr_non_default_exact_dict_value;
-      }
-      if (type_attr == nullptr) {
-        ++census.instance_attr_non_default_type_attr_absent;
-      }
-      guard_actual_partial_non_default_getattribute_types.insert(
-          record.owner_type);
-      const getattrofunc slot = record.owner_type->tp_getattro;
-      if (std::find(
-              guard_actual_partial_non_default_getattribute_slots.begin(),
-              guard_actual_partial_non_default_getattribute_slots.end(),
-              slot) ==
-          guard_actual_partial_non_default_getattribute_slots.end()) {
-        guard_actual_partial_non_default_getattribute_slots.push_back(slot);
-      }
-    } else {
-      ++census.instance_attr_binding_unsupported;
-      if (!default_getattribute) {
-        ++census.instance_attr_non_default_getattribute;
-        PyTypeObject* owner_type = Py_TYPE(owner);
-        if (PyType_HasFeature(owner_type, Py_TPFLAGS_HEAPTYPE)) {
-          ++census.instance_attr_non_default_heap_type;
-        } else {
-          ++census.instance_attr_non_default_static_type;
-        }
-        if (THPVariable_CheckExact(owner)) {
-          ++census.instance_attr_non_default_exact_tensor;
-        }
-        if (PyModule_CheckExact(owner)) {
-          ++census.instance_attr_non_default_exact_module;
-        }
-        if (PyType_Check(owner) && Py_TYPE(owner) == &PyType_Type) {
-          ++census.instance_attr_non_default_exact_type_object;
-        }
-        if (exact_owner_dict && PyUnicode_Check(key) &&
-            PyDict_GetItem(*dictptr, key) == expected) {
-          ++census.instance_attr_non_default_exact_dict_value;
-        }
-        if (type_attr == nullptr) {
-          ++census.instance_attr_non_default_type_attr_absent;
-        }
-        guard_actual_partial_non_default_getattribute_types.insert(
-            owner_type);
-        const getattrofunc slot = owner_type->tp_getattro;
-        if (std::find(
-                guard_actual_partial_non_default_getattribute_slots.begin(),
-                guard_actual_partial_non_default_getattribute_slots.end(),
-                slot) ==
-            guard_actual_partial_non_default_getattribute_slots.end()) {
-          guard_actual_partial_non_default_getattribute_slots.push_back(slot);
-        }
-      } else {
-        ++census.instance_attr_default_unsupported;
-        if (!PyUnicode_Check(key)) {
-          ++census.instance_attr_default_unsupported_non_unicode_key;
-        } else if (
-            (direct_instance_binding || type_method_binding) &&
-            !type_version_ready) {
-          ++census.instance_attr_default_unsupported_type_version;
-        } else if (
-            exact_owner_dict && PyDict_GetItem(*dictptr, key) == expected &&
-            type_attr != nullptr && !PyDescr_IsData(type_attr)) {
-          ++census.instance_attr_default_unsupported_instance_dict_shadow;
-          guard_actual_partial_record_unique_pointer_pair(
-              guard_actual_partial_default_shadow_owner_keys, owner, key);
-          guard_actual_partial_record_unique_pointer_pair(
-              guard_actual_partial_default_shadow_type_keys,
-              reinterpret_cast<PyObject*>(record.owner_type),
-              key);
-          if (Py_TYPE(type_attr)->tp_descr_get == nullptr) {
-            ++census.instance_attr_default_shadow_plain_value;
-          } else if (
-              PyType_HasFeature(Py_TYPE(type_attr), Py_TPFLAGS_HEAPTYPE)) {
-            ++census
-                  .instance_attr_default_shadow_heap_non_data_descriptor;
-          } else {
-            ++census
-                  .instance_attr_default_shadow_static_non_data_descriptor;
-          }
-        } else if (type_attr != nullptr && PyDescr_IsData(type_attr)) {
-          ++census.instance_attr_default_unsupported_data_descriptor;
-          guard_actual_partial_record_unique_pointer_pair(
-              guard_actual_partial_default_data_descriptor_owner_keys,
-              owner,
-              key);
-        } else if (type_attr != nullptr) {
-          ++census.instance_attr_default_unsupported_non_data_descriptor;
-        } else if (
-            !exact_owner_dict ||
-            PyDict_GetItem(*dictptr, key) != expected) {
-          ++census.instance_attr_default_unsupported_type_attr_absent;
-        } else {
-          ++census.instance_attr_default_unsupported_other;
-        }
-      }
-    }
-  }
-}
-
-static void guard_actual_partial_finalize_accessor_records(
-    const std::vector<GuardActualPartialAccessorRecord>& records) {
-  if (!guard_fast_plan_capability_census_enabled()) {
-    return;
-  }
-  std::unordered_set<PyObject*> unique_owners;
-  std::unordered_set<PyObject*> unique_generic_dict_owners;
-  std::unordered_set<PyObject*> unique_instance_attr_owners;
-  std::unordered_set<PyTypeObject*> unique_instance_attr_types;
-  for (const auto& record : records) {
-    const bool is_owner_path_record =
-        record.kind ==
-            GuardActualPartialAccessorRecordKind::GenericDictBinding ||
-        record.kind ==
-            GuardActualPartialAccessorRecordKind::InstanceAttrBinding ||
-        record.kind == GuardActualPartialAccessorRecordKind::
-                           InstanceAttrShadowBinding ||
-        record.kind == GuardActualPartialAccessorRecordKind::
-                           InstanceAttrDynamicBinding ||
-        record.kind ==
-            GuardActualPartialAccessorRecordKind::TypeMethodBinding ||
-        record.kind == GuardActualPartialAccessorRecordKind::
-                           StaticModuleAttrBinding ||
-        record.kind == GuardActualPartialAccessorRecordKind::
-                           StaticModuleDynamicAttrBinding ||
-        record.kind ==
-            GuardActualPartialAccessorRecordKind::StaticTypeAttrBinding ||
-        record.kind == GuardActualPartialAccessorRecordKind::
-                           StaticTypeDynamicAttrBinding ||
-        record.kind == GuardActualPartialAccessorRecordKind::
-                           UnsupportedInstanceAttrBinding;
-    if (is_owner_path_record && record.owner_ptr != nullptr) {
-      unique_owners.insert(record.owner_ptr);
-    }
-    if (record.kind ==
-        GuardActualPartialAccessorRecordKind::GenericDictBinding) {
-      unique_generic_dict_owners.insert(record.owner_ptr);
-    } else if (
-        record.kind ==
-            GuardActualPartialAccessorRecordKind::InstanceAttrBinding ||
-        record.kind == GuardActualPartialAccessorRecordKind::
-                           InstanceAttrShadowBinding ||
-        record.kind == GuardActualPartialAccessorRecordKind::
-                           InstanceAttrDynamicBinding ||
-        record.kind ==
-            GuardActualPartialAccessorRecordKind::TypeMethodBinding ||
-        record.kind == GuardActualPartialAccessorRecordKind::
-                           StaticModuleAttrBinding ||
-        record.kind == GuardActualPartialAccessorRecordKind::
-                           StaticModuleDynamicAttrBinding ||
-        record.kind ==
-            GuardActualPartialAccessorRecordKind::StaticTypeAttrBinding ||
-        record.kind == GuardActualPartialAccessorRecordKind::
-                           StaticTypeDynamicAttrBinding ||
-        record.kind == GuardActualPartialAccessorRecordKind::
-                           UnsupportedInstanceAttrBinding) {
-      unique_instance_attr_owners.insert(record.owner_ptr);
-      if (record.owner_type != nullptr) {
-        unique_instance_attr_types.insert(record.owner_type);
-      }
-    }
-    if (record.owner_ptr == nullptr ||
-        guard_actual_partial_type_accessor_owners.find(record.owner_ptr) ==
-            guard_actual_partial_type_accessor_owners.end()) {
-      continue;
-    }
-    if (record.kind ==
-        GuardActualPartialAccessorRecordKind::GenericDictBinding) {
-      guard_actual_partial_type_accessor_generic_dict_covered.insert(
-          record.owner_ptr);
-      guard_actual_partial_type_accessor_any_proof_covered.insert(
-          record.owner_ptr);
-    } else if (
-        record.kind == GuardActualPartialAccessorRecordKind::
-                           InstanceAttrBinding ||
-        record.kind == GuardActualPartialAccessorRecordKind::
-                           InstanceAttrShadowBinding ||
-        record.kind == GuardActualPartialAccessorRecordKind::
-                           InstanceAttrDynamicBinding) {
-      guard_actual_partial_type_accessor_instance_attr_covered.insert(
-          record.owner_ptr);
-      guard_actual_partial_type_accessor_any_proof_covered.insert(
-          record.owner_ptr);
-    } else if (
-        record.kind ==
-            GuardActualPartialAccessorRecordKind::TypeMethodBinding) {
-      guard_actual_partial_type_accessor_type_method_covered.insert(
-          record.owner_ptr);
-      guard_actual_partial_type_accessor_any_proof_covered.insert(
-          record.owner_ptr);
-    } else if (
-        record.kind == GuardActualPartialAccessorRecordKind::
-                           StaticModuleAttrBinding) {
-      guard_actual_partial_type_accessor_any_proof_covered.insert(
-          record.owner_ptr);
-    } else if (
-        record.kind == GuardActualPartialAccessorRecordKind::
-                           StaticModuleDynamicAttrBinding) {
-      guard_actual_partial_type_accessor_any_proof_covered.insert(
-          record.owner_ptr);
-    } else if (
-        record.kind ==
-            GuardActualPartialAccessorRecordKind::StaticTypeAttrBinding ||
-        record.kind == GuardActualPartialAccessorRecordKind::
-                           StaticTypeDynamicAttrBinding) {
-      guard_actual_partial_type_accessor_any_proof_covered.insert(
-          record.owner_ptr);
-    }
-  }
-  auto& census = guard_actual_partial_capability_census;
-  census.owner_path_unique_records += unique_owners.size();
-  census.generic_dict_unique_owners += unique_generic_dict_owners.size();
-  census.instance_attr_unique_owners += unique_instance_attr_owners.size();
-  census.instance_attr_unique_types += unique_instance_attr_types.size();
-}
-
-static void guard_actual_partial_reset_capability_census() {
-  guard_actual_partial_capability_census = {};
-  guard_actual_partial_type_accessor_owners.clear();
-  guard_actual_partial_type_accessor_types.clear();
-  guard_actual_partial_code_accessor_functions.clear();
-  guard_actual_partial_code_accessor_codes.clear();
-  guard_actual_partial_type_accessor_generic_dict_covered.clear();
-  guard_actual_partial_type_accessor_instance_attr_covered.clear();
-  guard_actual_partial_type_accessor_type_method_covered.clear();
-  guard_actual_partial_type_accessor_any_proof_covered.clear();
-  guard_actual_partial_non_default_getattribute_types.clear();
-  guard_actual_partial_non_default_getattribute_slots.clear();
-  guard_actual_partial_default_shadow_owner_keys.clear();
-  guard_actual_partial_default_shadow_type_keys.clear();
-  guard_actual_partial_default_data_descriptor_owner_keys.clear();
-}
-
-static const char* guard_actual_partial_leaf_capability_reason_name(
-    GuardActualPartialLeafCapabilityReason reason) {
-  switch (reason) {
-    case GuardActualPartialLeafCapabilityReason::None:
-      return "none";
-    case GuardActualPartialLeafCapabilityReason::UnknownGuard:
-      return "unknown_guard";
-    case GuardActualPartialLeafCapabilityReason::LambdaGuard:
-      return "lambda_guard";
-    case GuardActualPartialLeafCapabilityReason::EqualsNotDeeplyImmutable:
-      return "equals_not_deeply_immutable";
-    case GuardActualPartialLeafCapabilityReason::RangeIteratorMatch:
-      return "range_iterator_match";
-    case GuardActualPartialLeafCapabilityReason::TupleIteratorLen:
-      return "tuple_iterator_len";
-    case GuardActualPartialLeafCapabilityReason::LengthNonExactSequence:
-      return "length_non_exact_sequence";
-    case GuardActualPartialLeafCapabilityReason::DictLengthNonExactDict:
-      return "dict_length_non_exact_dict";
-    case GuardActualPartialLeafCapabilityReason::MappingKeysNonExactDict:
-      return "mapping_keys_non_exact_dict";
-    case GuardActualPartialLeafCapabilityReason::DictContainsNonExactDict:
-      return "dict_contains_non_exact_dict";
-    case GuardActualPartialLeafCapabilityReason::SetContains:
-      return "set_contains";
-    case GuardActualPartialLeafCapabilityReason::DualLevelMatch:
-      return "dual_level_match";
-    case GuardActualPartialLeafCapabilityReason::StorageOverlapping:
-      return "storage_overlapping";
-    case GuardActualPartialLeafCapabilityReason::SymbolicShapeGuard:
-      return "symbolic_shape_guard";
-    case GuardActualPartialLeafCapabilityReason::DynamicIndices:
-      return "dynamic_indices";
-    case GuardActualPartialLeafCapabilityReason::DictVersionNonExactDict:
-      return "dict_version_non_exact_dict";
-    case GuardActualPartialLeafCapabilityReason::DispatchKeySetMatch:
-      return "dispatch_key_set_match";
-    case GuardActualPartialLeafCapabilityReason::Count:
-      break;
-  }
-  return "unknown_guard";
-}
-
-static py::dict guard_actual_partial_get_capability_census() {
-  const auto& census = guard_actual_partial_capability_census;
-  py::dict result;
-  result["enabled"] = guard_fast_plan_capability_census_enabled();
-  result["leaf_observations"] = census.leaf_observations;
-  result["leaf_token_emitters"] = census.leaf_token_emitters;
-  result["leaf_without_tokens"] = census.leaf_without_tokens;
-  result["no_hasattr_leaf_observations"] =
-      census.no_hasattr_leaf_observations;
-  result["accessor_observations"] = census.accessor_observations;
-  result["get_attr_accessors"] = census.get_attr_accessors;
-  result["generic_get_attr_accessors"] = census.generic_get_attr_accessors;
-  result["get_generic_dict_accessors"] = census.get_generic_dict_accessors;
-  result["frame_locals_accessors"] = census.frame_locals_accessors;
-  result["dict_getitem_accessors"] = census.dict_getitem_accessors;
-  result["list_getitem_accessors"] = census.list_getitem_accessors;
-  result["tuple_getitem_accessors"] = census.tuple_getitem_accessors;
-  result["get_item_accessors"] = census.get_item_accessors;
-  result["set_getitem_accessors"] = census.set_getitem_accessors;
-  result["tensor_property_accessors"] = census.tensor_property_accessors;
-  result["indexed_accessors"] = census.indexed_accessors;
-  result["grad_accessors"] = census.grad_accessors;
-  result["func_defaults_accessors"] = census.func_defaults_accessors;
-  result["func_kw_defaults_accessors"] = census.func_kw_defaults_accessors;
-  result["globals_accessors"] = census.globals_accessors;
-  result["type_accessors"] = census.type_accessors;
-  result["type_dict_accessors"] = census.type_dict_accessors;
-  result["type_mro_accessors"] = census.type_mro_accessors;
-  result["tuple_iterator_getitem_accessors"] =
-      census.tuple_iterator_getitem_accessors;
-  result["global_weakref_accessors"] = census.global_weakref_accessors;
-  result["weakref_call_accessors"] = census.weakref_call_accessors;
-  result["code_accessors"] = census.code_accessors;
-  result["closure_accessors"] = census.closure_accessors;
-  result["call_function_no_args_accessors"] =
-      census.call_function_no_args_accessors;
-  result["python_lambda_accessors"] = census.python_lambda_accessors;
-  result["other_accessors"] = census.other_accessors;
-  result["type_accessor_unique_owners"] =
-      census.type_accessor_unique_owners;
-  result["type_accessor_unique_types"] =
-      census.type_accessor_unique_types;
-  result["code_accessor_function_observations"] =
-      census.code_accessor_function_observations;
-  result["code_accessor_bound_method_observations"] =
-      census.code_accessor_bound_method_observations;
-  result["code_accessor_instance_method_observations"] =
-      census.code_accessor_instance_method_observations;
-  result["code_accessor_unsupported_observations"] =
-      census.code_accessor_unsupported_observations;
-  result["code_accessor_unique_functions"] =
-      census.code_accessor_unique_functions;
-  result["code_accessor_unique_codes"] =
-      census.code_accessor_unique_codes;
-  result["type_accessor_generic_dict_covered_owners"] =
-      guard_actual_partial_type_accessor_generic_dict_covered.size();
-  result["type_accessor_instance_attr_covered_owners"] =
-      guard_actual_partial_type_accessor_instance_attr_covered.size();
-  result["type_accessor_type_method_covered_owners"] =
-      guard_actual_partial_type_accessor_type_method_covered.size();
-  result["type_accessor_any_proof_covered_owners"] =
-      guard_actual_partial_type_accessor_any_proof_covered.size();
-  result["type_accessor_uncovered_owners"] =
-      census.type_accessor_unique_owners -
-      guard_actual_partial_type_accessor_any_proof_covered.size();
-  result["owner_path_records"] = census.owner_path_records;
-  result["owner_path_unique_records"] = census.owner_path_unique_records;
-  result["generic_dict_binding_records"] =
-      census.generic_dict_binding_records;
-  result["generic_dict_binding_unsupported"] =
-      census.generic_dict_binding_unsupported;
-  result["generic_dict_unique_owners"] = census.generic_dict_unique_owners;
-  result["generic_dict_owner_proofs"] = census.generic_dict_owner_proofs;
-  result["generic_dict_owner_misses"] = census.generic_dict_owner_misses;
-  result["generic_dict_exact_dict_tokens_removed"] =
-      census.generic_dict_exact_dict_tokens_removed;
-  result["generic_dict_accessor_owner_proofs_removed"] =
-      census.generic_dict_accessor_owner_proofs_removed;
-  result["instance_attr_binding_records"] =
-      census.instance_attr_binding_records;
-  result["type_method_binding_records"] = census.type_method_binding_records;
-  result["instance_attr_binding_unsupported"] =
-      census.instance_attr_binding_unsupported;
-  result["instance_attr_non_default_getattribute"] =
-      census.instance_attr_non_default_getattribute;
-  result["instance_attr_non_default_heap_type"] =
-      census.instance_attr_non_default_heap_type;
-  result["instance_attr_non_default_static_type"] =
-      census.instance_attr_non_default_static_type;
-  result["instance_attr_non_default_exact_tensor"] =
-      census.instance_attr_non_default_exact_tensor;
-  result["instance_attr_non_default_exact_module"] =
-      census.instance_attr_non_default_exact_module;
-  result["instance_attr_non_default_exact_type_object"] =
-      census.instance_attr_non_default_exact_type_object;
-  result["instance_attr_non_default_exact_dict_value"] =
-      census.instance_attr_non_default_exact_dict_value;
-  result["instance_attr_non_default_type_attr_absent"] =
-      census.instance_attr_non_default_type_attr_absent;
-  result["instance_attr_default_unsupported"] =
-      census.instance_attr_default_unsupported;
-  result["instance_attr_default_unsupported_non_unicode_key"] =
-      census.instance_attr_default_unsupported_non_unicode_key;
-  result["instance_attr_default_unsupported_type_version"] =
-      census.instance_attr_default_unsupported_type_version;
-  result["instance_attr_default_unsupported_instance_dict_shadow"] =
-      census.instance_attr_default_unsupported_instance_dict_shadow;
-  result["instance_attr_default_shadow_plain_value"] =
-      census.instance_attr_default_shadow_plain_value;
-  result["instance_attr_default_shadow_static_non_data_descriptor"] =
-      census.instance_attr_default_shadow_static_non_data_descriptor;
-  result["instance_attr_default_shadow_heap_non_data_descriptor"] =
-      census.instance_attr_default_shadow_heap_non_data_descriptor;
-  result["instance_attr_default_shadow_unique_owner_keys"] =
-      guard_actual_partial_default_shadow_owner_keys.size();
-  result["instance_attr_default_shadow_unique_type_keys"] =
-      guard_actual_partial_default_shadow_type_keys.size();
-  result["instance_attr_default_unsupported_data_descriptor"] =
-      census.instance_attr_default_unsupported_data_descriptor;
-  result["instance_attr_default_data_descriptor_unique_owner_keys"] =
-      guard_actual_partial_default_data_descriptor_owner_keys.size();
-  result["instance_attr_default_unsupported_non_data_descriptor"] =
-      census.instance_attr_default_unsupported_non_data_descriptor;
-  result["instance_attr_default_unsupported_type_attr_absent"] =
-      census.instance_attr_default_unsupported_type_attr_absent;
-  result["instance_attr_default_unsupported_other"] =
-      census.instance_attr_default_unsupported_other;
-  result["instance_attr_non_default_unique_types"] =
-      guard_actual_partial_non_default_getattribute_types.size();
-  result["instance_attr_non_default_unique_slots"] =
-      guard_actual_partial_non_default_getattribute_slots.size();
-  result["instance_attr_unique_owners"] = census.instance_attr_unique_owners;
-  result["instance_attr_unique_types"] = census.instance_attr_unique_types;
-  result["type_method_owner_proofs"] = census.type_method_owner_proofs;
-  result["type_method_type_proofs"] = census.type_method_type_proofs;
-  result["type_method_owner_misses"] = census.type_method_owner_misses;
-  result["type_method_type_misses"] = census.type_method_type_misses;
-  result["type_method_type_refreshes"] =
-      census.type_method_type_refreshes;
-  result["instance_attr_owner_proofs"] = census.instance_attr_owner_proofs;
-  result["instance_attr_type_proofs"] = census.instance_attr_type_proofs;
-  result["instance_attr_owner_misses"] = census.instance_attr_owner_misses;
-  result["instance_attr_type_misses"] = census.instance_attr_type_misses;
-  result["instance_attr_type_refreshes"] =
-      census.instance_attr_type_refreshes;
-  result["instance_attr_shadow_binding_records"] =
-      census.instance_attr_shadow_binding_records;
-  result["instance_attr_shadow_type_keys"] =
-      census.instance_attr_shadow_type_keys;
-  result["instance_attr_dynamic_binding_records"] =
-      census.instance_attr_dynamic_binding_records;
-  result["instance_attr_dynamic_proofs"] =
-      census.instance_attr_dynamic_proofs;
-  result["instance_attr_dynamic_misses"] =
-      census.instance_attr_dynamic_misses;
-  result["static_module_attr_binding_records"] =
-      census.static_module_attr_binding_records;
-  result["static_module_attr_owner_proofs"] =
-      census.static_module_attr_owner_proofs;
-  result["static_module_attr_type_proofs"] =
-      census.static_module_attr_type_proofs;
-  result["static_module_attr_owner_proofs_removed"] =
-      census.static_module_attr_owner_proofs_removed;
-  result["static_module_attr_owner_misses"] =
-      census.static_module_attr_owner_misses;
-  result["static_module_attr_type_misses"] =
-      census.static_module_attr_type_misses;
-  result["static_module_dynamic_attr_binding_records"] =
-      census.static_module_dynamic_attr_binding_records;
-  result["static_module_dynamic_attr_proofs"] =
-      census.static_module_dynamic_attr_proofs;
-  result["static_module_dynamic_attr_misses"] =
-      census.static_module_dynamic_attr_misses;
-  result["static_type_attr_binding_records"] =
-      census.static_type_attr_binding_records;
-  result["static_type_attr_owner_proofs"] =
-      census.static_type_attr_owner_proofs;
-  result["static_type_attr_type_proofs"] =
-      census.static_type_attr_type_proofs;
-  result["static_type_attr_owner_proofs_removed"] =
-      census.static_type_attr_owner_proofs_removed;
-  result["static_type_attr_owner_misses"] =
-      census.static_type_attr_owner_misses;
-  result["static_type_attr_type_misses"] =
-      census.static_type_attr_type_misses;
-  result["static_type_dynamic_attr_binding_records"] =
-      census.static_type_dynamic_attr_binding_records;
-  result["static_type_dynamic_attr_proofs"] =
-      census.static_type_dynamic_attr_proofs;
-  result["static_type_dynamic_attr_misses"] =
-      census.static_type_dynamic_attr_misses;
-  result["type_accessor_coverage_failures"] =
-      census.type_accessor_coverage_failures;
-  result["code_accessor_proofs"] = census.code_accessor_proofs;
-  result["code_accessor_misses"] = census.code_accessor_misses;
-  result["unsupported_leaf_capabilities"] =
-      census.unsupported_leaf_capabilities;
-  result["unsupported_accessor_capabilities"] =
-      census.unsupported_accessor_capabilities;
-  result["equals_safe_constant_admissions"] =
-      census.equals_safe_constant_admissions;
-  result["equals_exact_set_token_emissions"] =
-      census.equals_exact_set_token_emissions;
-  result["equals_exact_set_token_items"] =
-      census.equals_exact_set_token_items;
-  result["equals_exact_set_token_max_size"] =
-      census.equals_exact_set_token_max_size;
-  result["equals_exact_set_token_misses"] =
-      census.equals_exact_set_token_misses;
-  py::dict unsupported_equals_types;
-  for (const auto& [type_name, count] : census.unsupported_equals_types) {
-    unsupported_equals_types[py::str(type_name)] = count;
-  }
-  result["unsupported_equals_types"] = std::move(unsupported_equals_types);
-  py::dict unsupported_leaf_reasons;
-  for (size_t i = 1;
-       i < static_cast<size_t>(
-               GuardActualPartialLeafCapabilityReason::Count);
-       ++i) {
-    const auto reason =
-        static_cast<GuardActualPartialLeafCapabilityReason>(i);
-    unsupported_leaf_reasons[py::str(
-        guard_actual_partial_leaf_capability_reason_name(reason))] =
-        census.unsupported_leaf_capability_reasons[i];
-  }
-  result["unsupported_leaf_capability_reasons"] =
-      std::move(unsupported_leaf_reasons);
-  result["last_unsupported_leaf_capability_reason"] =
-      guard_actual_partial_leaf_capability_reason_name(
-          census.last_unsupported_leaf_reason);
-  return result;
 }
 
 static bool guard_actual_partial_is_recording_source(
@@ -5448,14 +4342,6 @@ class LeafGuard {
       PyObject* /*value*/) const {
     return false;
   }
-  virtual GuardActualPartialLeafCapabilityReason
-  actual_partial_unsupported_reason(PyObject* /*value*/) const {
-    return GuardActualPartialLeafCapabilityReason::UnknownGuard;
-  }
-  virtual bool actual_partial_uses_safe_constant_whitelist(
-      PyObject* /*value*/) const {
-    return false;
-  }
   virtual bool emits_subtree_memo_token() const {
     return false;
   }
@@ -5463,9 +4349,6 @@ class LeafGuard {
     return false;
   }
   virtual bool emits_subtree_memo_token_for_frame_locals() const {
-    return false;
-  }
-  virtual bool is_actual_partial_no_hasattr_guard() const {
     return false;
   }
   virtual bool append_subtree_memo_token(
@@ -5550,10 +4433,6 @@ class LAMBDA_GUARD : public LeafGuard {
     return false;
   }
 
-  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
-      PyObject*) const override {
-    return GuardActualPartialLeafCapabilityReason::LambdaGuard;
-  }
 
  private:
   // The user provided lambda function for check_fn.
@@ -5732,14 +4611,6 @@ class EQUALS_MATCH : public LeafGuard {
       return true;
     }
     const Py_ssize_t size = PySet_GET_SIZE(_value.ptr());
-    if (guard_fast_plan_capability_census_enabled()) {
-      auto& census = guard_actual_partial_capability_census;
-      ++census.equals_exact_set_token_emissions;
-      census.equals_exact_set_token_items += static_cast<uint64_t>(size);
-      census.equals_exact_set_token_max_size = std::max(
-          census.equals_exact_set_token_max_size,
-          static_cast<uint64_t>(size));
-    }
     append_guard_subtree_memo_token(
         tokens,
         GuardSubtreeEntryToken::make_exact_set_equals(
@@ -5748,16 +4619,7 @@ class EQUALS_MATCH : public LeafGuard {
     return true;
   }
 
-  bool actual_partial_uses_safe_constant_whitelist(
-      PyObject* value) const override {
-    return _actual_partial_safe_constant &&
-        !guard_actual_partial_is_deeply_immutable(value);
-  }
 
-  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
-      PyObject*) const override {
-    return GuardActualPartialLeafCapabilityReason::EqualsNotDeeplyImmutable;
-  }
 
  private:
   // value to compare against. This is py::object so that we hold on to the
@@ -5812,10 +4674,6 @@ class RANGE_ITERATOR_MATCH : public LeafGuard {
     return start == _start && stop == _stop && iter->step == _step;
   }
 
-  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
-      PyObject*) const override {
-    return GuardActualPartialLeafCapabilityReason::RangeIteratorMatch;
-  }
 
  private:
   intptr_t _type_id;
@@ -5850,10 +4708,6 @@ class TUPLE_ITERATOR_LEN : public LeafGuard {
     return length == _length;
   }
 
-  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
-      PyObject*) const override {
-    return GuardActualPartialLeafCapabilityReason::TupleIteratorLen;
-  }
 
  private:
   // Length of the guarded list
@@ -5882,10 +4736,6 @@ class LENGTH_CHECK : public LeafGuard {
     return PyList_CheckExact(value) || PyTuple_CheckExact(value);
   }
 
-  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
-      PyObject*) const override {
-    return GuardActualPartialLeafCapabilityReason::LengthNonExactSequence;
-  }
 
  private:
   // Length of the guarded list
@@ -5911,10 +4761,6 @@ class DICT_LENGTH : public LeafGuard {
     return PyDict_CheckExact(value);
   }
 
-  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
-      PyObject*) const override {
-    return GuardActualPartialLeafCapabilityReason::DictLengthNonExactDict;
-  }
 
  private:
   // Length of the guarded dict
@@ -5962,10 +4808,6 @@ class MAPPING_KEYS_MATCH : public LeafGuard {
     return PyDict_CheckExact(value);
   }
 
-  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
-      PyObject*) const override {
-    return GuardActualPartialLeafCapabilityReason::MappingKeysNonExactDict;
-  }
 
  private:
   py::object _keys;
@@ -6155,10 +4997,6 @@ class NO_HASATTR : public LeafGuard {
     return true;
   }
 
-  bool is_actual_partial_no_hasattr_guard() const override {
-    return true;
-  }
-
   bool append_subtree_memo_token(
       PyObject* value,
       std::vector<GuardSubtreeEntryToken>* tokens) override {
@@ -6219,10 +5057,6 @@ class DICT_CONTAINS : public LeafGuard {
     return PyDict_CheckExact(value);
   }
 
-  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
-      PyObject*) const override {
-    return GuardActualPartialLeafCapabilityReason::DictContainsNonExactDict;
-  }
 
  private:
   int _contains;
@@ -6251,10 +5085,6 @@ class SET_CONTAINS : public LeafGuard {
     return result == _contains;
   }
 
-  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
-      PyObject*) const override {
-    return GuardActualPartialLeafCapabilityReason::SetContains;
-  }
 
  private:
   int _contains;
@@ -6342,10 +5172,6 @@ class DUAL_LEVEL_MATCH : public LeafGuard {
     }
   }
 
-  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
-      PyObject*) const override {
-    return GuardActualPartialLeafCapabilityReason::DualLevelMatch;
-  }
 
  private:
   int64_t _level;
@@ -6601,10 +5427,6 @@ class STORAGE_OVERLAPPING : public RelationalGuard {
     _checker->reset(_overlapping);
   }
 
-  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
-      PyObject*) const override {
-    return GuardActualPartialLeafCapabilityReason::StorageOverlapping;
-  }
 
  private:
   // Flag that indicates which kind of tensor this guard is collecting:
@@ -6722,10 +5544,6 @@ class SYMBOLIC_SHAPE_GUARD : public RelationalGuard {
     _args_seen = 0;
   }
 
-  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
-      PyObject*) const override {
-    return GuardActualPartialLeafCapabilityReason::SymbolicShapeGuard;
-  }
 
  private:
   py::object _py_addr_keep_alive;
@@ -6776,10 +5594,6 @@ class DYNAMIC_INDICES : public LeafGuard {
     return false;
   }
 
-  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
-      PyObject*) const override {
-    return GuardActualPartialLeafCapabilityReason::DynamicIndices;
-  }
 
  private:
   py::set _dynamic_indices;
@@ -6807,10 +5621,6 @@ class DICT_VERSION : public LeafGuard {
     return PyDict_CheckExact(value);
   }
 
-  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
-      PyObject*) const override {
-    return GuardActualPartialLeafCapabilityReason::DictVersionNonExactDict;
-  }
 
   // Saved dict version.
   uint64_t _tag;
@@ -6919,9 +5729,9 @@ class GuardAccessor {
       PyObject* /*parent*/) const {
     return false;
   }
-  virtual GuardActualPartialAccessorCensusKind
-  actual_partial_census_kind() const {
-    return GuardActualPartialAccessorCensusKind::Other;
+  virtual GuardActualPartialSpecialAccessorKind
+  actual_partial_special_kind() const {
+    return GuardActualPartialSpecialAccessorKind::None;
   }
   virtual GuardDebugInfo check_verbose_nopybind(PyObject* obj) = 0;
   virtual std::string repr() const = 0;
@@ -7615,33 +6425,9 @@ class GuardManager {
                 guard_actual_partial_is_recording_source(_source))) {
           if (!guard->supports_actual_partial_subtree_memo(value)) {
             guard_actual_partial_mark_unsupported();
-            if (guard_fast_plan_capability_census_enabled()) {
-              auto& census = guard_actual_partial_capability_census;
-              ++census.unsupported_leaf_capabilities;
-              const auto reason =
-                  guard->actual_partial_unsupported_reason(value);
-              ++census.unsupported_leaf_capability_reasons
-                    [static_cast<size_t>(reason)];
-              census.last_unsupported_leaf_reason = reason;
-              if (reason ==
-                  GuardActualPartialLeafCapabilityReason::
-                      EqualsNotDeeplyImmutable) {
-                const char* type_name = Py_TYPE(value)->tp_name;
-                ++census.unsupported_equals_types
-                      [type_name != nullptr ? type_name : "<unknown>"];
-              }
-            }
           }
           emit_actual_partial_token =
               guard->emits_actual_partial_subtree_memo_token();
-          if (guard_fast_plan_capability_census_enabled() &&
-              guard->actual_partial_uses_safe_constant_whitelist(value)) {
-            ++guard_actual_partial_capability_census
-                  .equals_safe_constant_admissions;
-          }
-          guard_actual_partial_record_leaf_capability(
-              guard->emits_subtree_memo_token(),
-              guard->is_actual_partial_no_hasattr_guard());
         }
       }
       if (C10_UNLIKELY(active_guard_subtree_memo_recorder != nullptr)) {
@@ -7694,30 +6480,24 @@ class GuardManager {
       const bool actual_partial_self = C10_UNLIKELY(
           guard_actual_partial_is_recording_source(accessor->get_source()));
       if (actual_partial_self) {
-        const auto census_kind = accessor->actual_partial_census_kind();
-        PyObject* census_parent = nullptr;
+        const auto special_kind = accessor->actual_partial_special_kind();
+        PyObject* parent = nullptr;
         if constexpr (std::is_same_v<T, PyObject>) {
-          census_parent = value;
-          if (census_kind ==
-              GuardActualPartialAccessorCensusKind::Type) {
+          parent = value;
+          if (special_kind ==
+              GuardActualPartialSpecialAccessorKind::Type) {
             guard_actual_partial_record_type_accessor(
                 value, accessor->get_source());
           } else if (
-              census_kind ==
-              GuardActualPartialAccessorCensusKind::Code) {
+              special_kind ==
+              GuardActualPartialSpecialAccessorKind::Code) {
             guard_actual_partial_record_code_accessor(
                 value, accessor->get_source());
           }
         }
-        if (!accessor->supports_actual_partial_subtree_memo(census_parent)) {
+        if (!accessor->supports_actual_partial_subtree_memo(parent)) {
           guard_actual_partial_mark_unsupported();
-          if (guard_fast_plan_capability_census_enabled()) {
-            ++guard_actual_partial_capability_census
-                  .unsupported_accessor_capabilities;
-          }
         }
-        guard_actual_partial_record_accessor_capability(
-            census_kind, census_parent);
       }
       GuardActualPartialSelfScope self_scope(actual_partial_self);
       const bool accessor_result =
@@ -8701,7 +7481,6 @@ class DictGuardManager : public GuardManager {
           cloned_mgr->_key_value_managers[index].second =
               std::unique_ptr<GuardManager>(cloned_value_manager);
         }
-
       }
     }
     return cloned_mgr;
@@ -8977,10 +7756,6 @@ class DISPATCH_KEY_SET_MATCH : public LeafGuard {
     return false;
   }
 
-  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
-      PyObject*) const override {
-    return GuardActualPartialLeafCapabilityReason::DispatchKeySetMatch;
-  }
 
  private:
   uint64_t raw_repr;
@@ -9119,10 +7894,6 @@ class GetAttrGuardAccessor : public GuardAccessor {
     return true;
   }
 
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::GetAttr;
-  }
 
   GetAttrGuardAccessor(
       RootGuardManager* root,
@@ -9211,10 +7982,6 @@ class GenericGetAttrGuardAccessor : public GuardAccessor {
     return true;
   }
 
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::GenericGetAttr;
-  }
 
   GenericGetAttrGuardAccessor(
       RootGuardManager* root,
@@ -9301,10 +8068,6 @@ class GetGenericDictGuardAccessor : public GuardAccessor {
     return true;
   }
 
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::GetGenericDict;
-  }
 
   GetGenericDictGuardAccessor(
       RootGuardManager* root,
@@ -9383,10 +8146,6 @@ class GetGenericDictGuardAccessor : public GuardAccessor {
  */
 class GetItemGuardAccessor : public GuardAccessor {
  public:
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::GetItem;
-  }
 
   GetItemGuardAccessor(
       RootGuardManager* root,
@@ -9468,10 +8227,6 @@ class FrameLocalsGuardAccessor : public GuardAccessor {
     return true;
   }
 
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::FrameLocals;
-  }
 
   int framelocals_index() const override {
     return _framelocals_idx;
@@ -9605,10 +8360,6 @@ class DictGetItemGuardAccessor : public GuardAccessor {
     return PyDict_CheckExact(parent);
   }
 
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::DictGetItem;
-  }
 
   DictGetItemGuardAccessor(
       RootGuardManager* root,
@@ -9703,10 +8454,6 @@ class ListGetItemGuardAccessor : public GuardAccessor {
     return PyList_CheckExact(parent);
   }
 
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::ListGetItem;
-  }
 
   ListGetItemGuardAccessor(
       RootGuardManager* root,
@@ -9778,10 +8525,6 @@ class ListGetItemGuardAccessor : public GuardAccessor {
  */
 class SetGetItemGuardAccessor : public GuardAccessor {
  public:
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::SetGetItem;
-  }
 
   SetGetItemGuardAccessor(
       RootGuardManager* root,
@@ -9865,10 +8608,6 @@ class TupleGetItemGuardAccessor : public GuardAccessor {
     return PyTuple_CheckExact(parent);
   }
 
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::TupleGetItem;
-  }
 
   TupleGetItemGuardAccessor(
       RootGuardManager* root,
@@ -9961,10 +8700,6 @@ std::string to_string(TensorProperty prop) {
 template <TensorProperty _prop>
 class TensorPropertyGuardAccessor : public GuardAccessor {
  public:
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::TensorProperty;
-  }
 
   TensorPropertyGuardAccessor(
       RootGuardManager* root,
@@ -10094,10 +8829,6 @@ class TensorPropertyGuardAccessor : public GuardAccessor {
  */
 class IndexedGuardAccessor : public GuardAccessor {
  public:
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::Indexed;
-  }
 
   IndexedGuardAccessor(
       RootGuardManager* root,
@@ -10161,10 +8892,6 @@ class IndexedGuardAccessor : public GuardAccessor {
  */
 class GradGuardAccessor : public GuardAccessor {
  public:
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::Grad;
-  }
 
   GradGuardAccessor(
       RootGuardManager* root,
@@ -10236,10 +8963,6 @@ class GradGuardAccessor : public GuardAccessor {
  */
 class FuncDefaultsGuardAccessor : public GuardAccessor {
  public:
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::FuncDefaults;
-  }
 
   FuncDefaultsGuardAccessor(
       RootGuardManager* root,
@@ -10317,10 +9040,6 @@ class FuncDefaultsGuardAccessor : public GuardAccessor {
  */
 class FuncKwDefaultsGuardAccessor : public GuardAccessor {
  public:
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::FuncKwDefaults;
-  }
 
   FuncKwDefaultsGuardAccessor(
       RootGuardManager* root,
@@ -10399,10 +9118,6 @@ class FuncKwDefaultsGuardAccessor : public GuardAccessor {
  */
 class GlobalsGuardAccessor : public GuardAccessor {
  public:
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::Globals;
-  }
 
   GlobalsGuardAccessor(
       RootGuardManager* root,
@@ -10474,9 +9189,9 @@ class TypeGuardAccessor : public GuardAccessor {
     return true;
   }
 
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+  GuardActualPartialSpecialAccessorKind actual_partial_special_kind()
       const override {
-    return GuardActualPartialAccessorCensusKind::Type;
+    return GuardActualPartialSpecialAccessorKind::Type;
   }
 
   // name = __type_accessor__, a unique string used as attribute name.
@@ -10531,10 +9246,6 @@ class TypeGuardAccessor : public GuardAccessor {
  */
 class TypeDictGuardAccessor : public GuardAccessor {
  public:
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::TypeDict;
-  }
 
   // name = __type_dict_accessor__, a unique string used as attribute name.
   TypeDictGuardAccessor(
@@ -10597,10 +9308,6 @@ class TypeDictGuardAccessor : public GuardAccessor {
  */
 class TypeMROGuardAccessor : public GuardAccessor {
  public:
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::TypeMRO;
-  }
 
   // name = __type_mro_accessor__, a unique string used as attribute name.
   TypeMROGuardAccessor(
@@ -10655,10 +9362,6 @@ class TypeMROGuardAccessor : public GuardAccessor {
  */
 class TupleIteratorGetItemAccessor : public GuardAccessor {
  public:
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::TupleIteratorGetItem;
-  }
 
   TupleIteratorGetItemAccessor(
       RootGuardManager* root,
@@ -10739,10 +9442,6 @@ class TupleIteratorGetItemAccessor : public GuardAccessor {
  */
 class GlobalWeakRefGuardAccessor : public GuardAccessor {
  public:
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::GlobalWeakRef;
-  }
 
   GlobalWeakRefGuardAccessor(
       RootGuardManager* root,
@@ -10855,10 +9554,6 @@ class GlobalWeakRefGuardAccessor : public GuardAccessor {
  */
 class WeakRefCallGuardAccessor : public GuardAccessor {
  public:
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::WeakRefCall;
-  }
 
   WeakRefCallGuardAccessor(
       RootGuardManager* root,
@@ -10950,9 +9645,9 @@ class CodeGuardAccessor : public GuardAccessor {
     return true;
   }
 
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+  GuardActualPartialSpecialAccessorKind actual_partial_special_kind()
       const override {
-    return GuardActualPartialAccessorCensusKind::Code;
+    return GuardActualPartialSpecialAccessorKind::Code;
   }
 
   // name = __type_mro_accessor__, a unique string used as attribute name.
@@ -11032,10 +9727,6 @@ class CodeGuardAccessor : public GuardAccessor {
  */
 class ClosureGuardAccessor : public GuardAccessor {
  public:
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::Closure;
-  }
 
   // name = __type_mro_accessor__, a unique string used as attribute name.
   ClosureGuardAccessor(
@@ -11113,10 +9804,6 @@ class ClosureGuardAccessor : public GuardAccessor {
  */
 class CallFunctionNoArgsGuardAccessor : public GuardAccessor {
  public:
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::CallFunctionNoArgs;
-  }
 
   CallFunctionNoArgsGuardAccessor(
       RootGuardManager* root,
@@ -11204,10 +9891,6 @@ class CallFunctionNoArgsGuardAccessor : public GuardAccessor {
  */
 class PythonLambdaGuardAccessor : public GuardAccessor {
  public:
-  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
-      const override {
-    return GuardActualPartialAccessorCensusKind::PythonLambda;
-  }
 
   PythonLambdaGuardAccessor(
       RootGuardManager* root,
@@ -11551,8 +10234,6 @@ bool run_root_guard_manager_with_last_success_receipt(
       return false;
     }
   }
-  guard_actual_partial_finalize_accessor_records(accessor_records);
-
   if (!actual_partial_supported) {
     state->actual_partial.disable();
     return true;
@@ -11662,13 +10343,6 @@ PyObject* torch_c_dynamo_guards_init() {
   }
 
   auto py_m = py::handle(m).cast<py::module>();
-  py_m.def(
-      "_get_guard_fast_plan_capability_census",
-      &guard_actual_partial_get_capability_census);
-  py_m.def(
-      "_reset_guard_fast_plan_capability_census",
-      &guard_actual_partial_reset_capability_census);
-
   py::class_<GuardDebugInfo, std::unique_ptr<GuardDebugInfo>>(
       py_m, "GuardDebugInfo")
       .def(py::init<bool, py::list, int>())
