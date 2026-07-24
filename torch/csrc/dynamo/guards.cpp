@@ -274,6 +274,7 @@ struct GuardActualPartialCapabilityCensus {
   uint64_t code_accessor_misses{0};
   uint64_t unsupported_leaf_capabilities{0};
   uint64_t unsupported_accessor_capabilities{0};
+  uint64_t equals_safe_constant_admissions{0};
   std::array<
       uint64_t,
       static_cast<size_t>(GuardActualPartialLeafCapabilityReason::Count)>
@@ -3578,6 +3579,8 @@ static py::dict guard_actual_partial_get_capability_census() {
       census.unsupported_leaf_capabilities;
   result["unsupported_accessor_capabilities"] =
       census.unsupported_accessor_capabilities;
+  result["equals_safe_constant_admissions"] =
+      census.equals_safe_constant_admissions;
   py::dict unsupported_leaf_reasons;
   for (size_t i = 1;
        i < static_cast<size_t>(
@@ -4509,6 +4512,10 @@ class LeafGuard {
   actual_partial_unsupported_reason(PyObject* /*value*/) const {
     return GuardActualPartialLeafCapabilityReason::UnknownGuard;
   }
+  virtual bool actual_partial_uses_safe_constant_whitelist(
+      PyObject* /*value*/) const {
+    return false;
+  }
   virtual bool emits_subtree_memo_token() const {
     return false;
   }
@@ -4738,10 +4745,12 @@ class EQUALS_MATCH : public LeafGuard {
   EQUALS_MATCH(
       RootGuardManager* root_guard_manager,
       py::object value,
-      py::object verbose_code_parts)
+      py::object verbose_code_parts,
+      bool actual_partial_safe_constant = false)
       : LeafGuard(root_guard_manager, std::move(verbose_code_parts)),
         _value(value),
-        _value_type(Py_TYPE(value.ptr())) {}
+        _value_type(Py_TYPE(value.ptr())),
+        _actual_partial_safe_constant(actual_partial_safe_constant) {}
 
   bool check_nopybind(PyObject* value) override { // borrowed ref
     // Fast path - pointer equality check. Pointer equality checks are ok
@@ -4764,7 +4773,14 @@ class EQUALS_MATCH : public LeafGuard {
 
   bool supports_actual_partial_subtree_memo(
       PyObject* value) const override {
-    return guard_actual_partial_is_deeply_immutable(value);
+    return _actual_partial_safe_constant ||
+        guard_actual_partial_is_deeply_immutable(value);
+  }
+
+  bool actual_partial_uses_safe_constant_whitelist(
+      PyObject* value) const override {
+    return _actual_partial_safe_constant &&
+        !guard_actual_partial_is_deeply_immutable(value);
   }
 
   GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
@@ -4781,6 +4797,8 @@ class EQUALS_MATCH : public LeafGuard {
 
   // Type of the value
   PyTypeObject* _value_type;
+  // GuardBuilder derives this from torch._dynamo.utils.is_safe_constant.
+  bool _actual_partial_safe_constant;
 };
 
 class RANGE_ITERATOR_MATCH : public LeafGuard {
@@ -6638,6 +6656,11 @@ class GuardManager {
           }
           emit_actual_partial_token =
               guard->emits_actual_partial_subtree_memo_token();
+          if (guard_fast_plan_capability_census_enabled() &&
+              guard->actual_partial_uses_safe_constant_whitelist(value)) {
+            ++guard_actual_partial_capability_census
+                  .equals_safe_constant_admissions;
+          }
           guard_actual_partial_record_leaf_capability(
               guard->emits_subtree_memo_token(),
               guard->is_actual_partial_no_hasattr_guard());
@@ -11044,13 +11067,18 @@ PyObject* torch_c_dynamo_guards_init() {
           "add_equals_match_guard",
           [](GuardManager& self,
              py::object value,
-             py::object verbose_code_parts) -> void {
+             py::object verbose_code_parts,
+             bool actual_partial_safe_constant) -> void {
             SKIP_IF_GUARD_ALREADY_PRESENT("EQUALS_MATCH");
             self.add_leaf_guard(std::make_shared<EQUALS_MATCH>(
                 self.get_root(),
                 std::move(value),
-                std::move(verbose_code_parts)));
-          })
+                std::move(verbose_code_parts),
+                actual_partial_safe_constant));
+          },
+          py::arg("value"),
+          py::arg("verbose_code_parts"),
+          py::arg("actual_partial_safe_constant") = false)
       .def(
           "add_length_check_guard",
           [](GuardManager& self,

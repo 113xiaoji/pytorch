@@ -1734,13 +1734,16 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                     super().__init__()
                     self._cached_tensor = torch.ones(2)
                     self.offsets = [1.0]
+                    self.device = torch.device("cpu")
 
                 def helper(self, x):
                     return x
 
                 def forward(self, x):
                     return self.helper(
-                        self._cached_tensor + x + self.offsets[0]
+                        self._cached_tensor
+                        + x.to(self.device)
+                        + self.offsets[0]
                     )
 
             guards = torch._C._dynamo.guards
@@ -1841,6 +1844,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             assert census["code_accessor_proofs"] > 0, census
             assert census["unsupported_leaf_capabilities"] == 0, census
             assert census["unsupported_accessor_capabilities"] == 0, census
+            assert census["equals_safe_constant_admissions"] > 0, census
             assert (
                 sum(census["unsupported_leaf_capability_reasons"].values())
                 == census["unsupported_leaf_capabilities"]
@@ -1900,6 +1904,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             assert census["code_accessor_misses"] == 0, census
             assert census["unsupported_leaf_capabilities"] == 0, census
             assert census["unsupported_accessor_capabilities"] == 0, census
+            assert census["equals_safe_constant_admissions"] == 0, census
             assert (
                 sum(census["unsupported_leaf_capability_reasons"].values())
                 == 0
