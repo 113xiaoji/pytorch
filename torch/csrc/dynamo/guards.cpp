@@ -183,6 +183,27 @@ enum class GuardActualPartialAccessorCensusKind : uint8_t {
   PythonLambda,
 };
 
+enum class GuardActualPartialLeafCapabilityReason : uint8_t {
+  None,
+  UnknownGuard,
+  LambdaGuard,
+  EqualsNotDeeplyImmutable,
+  RangeIteratorMatch,
+  TupleIteratorLen,
+  LengthNonExactSequence,
+  DictLengthNonExactDict,
+  MappingKeysNonExactDict,
+  DictContainsNonExactDict,
+  SetContains,
+  DualLevelMatch,
+  StorageOverlapping,
+  SymbolicShapeGuard,
+  DynamicIndices,
+  DictVersionNonExactDict,
+  DispatchKeySetMatch,
+  Count,
+};
+
 struct GuardActualPartialCapabilityCensus {
   uint64_t leaf_observations{0};
   uint64_t leaf_token_emitters{0};
@@ -253,6 +274,12 @@ struct GuardActualPartialCapabilityCensus {
   uint64_t code_accessor_misses{0};
   uint64_t unsupported_leaf_capabilities{0};
   uint64_t unsupported_accessor_capabilities{0};
+  std::array<
+      uint64_t,
+      static_cast<size_t>(GuardActualPartialLeafCapabilityReason::Count)>
+      unsupported_leaf_capability_reasons{};
+  GuardActualPartialLeafCapabilityReason last_unsupported_leaf_reason{
+      GuardActualPartialLeafCapabilityReason::None};
 };
 
 enum class GuardActualPartialAccessorRecordKind : uint8_t {
@@ -3401,6 +3428,49 @@ static void guard_actual_partial_reset_capability_census() {
   guard_actual_partial_type_accessor_any_proof_covered.clear();
 }
 
+static const char* guard_actual_partial_leaf_capability_reason_name(
+    GuardActualPartialLeafCapabilityReason reason) {
+  switch (reason) {
+    case GuardActualPartialLeafCapabilityReason::None:
+      return "none";
+    case GuardActualPartialLeafCapabilityReason::UnknownGuard:
+      return "unknown_guard";
+    case GuardActualPartialLeafCapabilityReason::LambdaGuard:
+      return "lambda_guard";
+    case GuardActualPartialLeafCapabilityReason::EqualsNotDeeplyImmutable:
+      return "equals_not_deeply_immutable";
+    case GuardActualPartialLeafCapabilityReason::RangeIteratorMatch:
+      return "range_iterator_match";
+    case GuardActualPartialLeafCapabilityReason::TupleIteratorLen:
+      return "tuple_iterator_len";
+    case GuardActualPartialLeafCapabilityReason::LengthNonExactSequence:
+      return "length_non_exact_sequence";
+    case GuardActualPartialLeafCapabilityReason::DictLengthNonExactDict:
+      return "dict_length_non_exact_dict";
+    case GuardActualPartialLeafCapabilityReason::MappingKeysNonExactDict:
+      return "mapping_keys_non_exact_dict";
+    case GuardActualPartialLeafCapabilityReason::DictContainsNonExactDict:
+      return "dict_contains_non_exact_dict";
+    case GuardActualPartialLeafCapabilityReason::SetContains:
+      return "set_contains";
+    case GuardActualPartialLeafCapabilityReason::DualLevelMatch:
+      return "dual_level_match";
+    case GuardActualPartialLeafCapabilityReason::StorageOverlapping:
+      return "storage_overlapping";
+    case GuardActualPartialLeafCapabilityReason::SymbolicShapeGuard:
+      return "symbolic_shape_guard";
+    case GuardActualPartialLeafCapabilityReason::DynamicIndices:
+      return "dynamic_indices";
+    case GuardActualPartialLeafCapabilityReason::DictVersionNonExactDict:
+      return "dict_version_non_exact_dict";
+    case GuardActualPartialLeafCapabilityReason::DispatchKeySetMatch:
+      return "dispatch_key_set_match";
+    case GuardActualPartialLeafCapabilityReason::Count:
+      break;
+  }
+  return "unknown_guard";
+}
+
 static py::dict guard_actual_partial_get_capability_census() {
   const auto& census = guard_actual_partial_capability_census;
   py::dict result;
@@ -3508,6 +3578,22 @@ static py::dict guard_actual_partial_get_capability_census() {
       census.unsupported_leaf_capabilities;
   result["unsupported_accessor_capabilities"] =
       census.unsupported_accessor_capabilities;
+  py::dict unsupported_leaf_reasons;
+  for (size_t i = 1;
+       i < static_cast<size_t>(
+               GuardActualPartialLeafCapabilityReason::Count);
+       ++i) {
+    const auto reason =
+        static_cast<GuardActualPartialLeafCapabilityReason>(i);
+    unsupported_leaf_reasons[py::str(
+        guard_actual_partial_leaf_capability_reason_name(reason))] =
+        census.unsupported_leaf_capability_reasons[i];
+  }
+  result["unsupported_leaf_capability_reasons"] =
+      std::move(unsupported_leaf_reasons);
+  result["last_unsupported_leaf_capability_reason"] =
+      guard_actual_partial_leaf_capability_reason_name(
+          census.last_unsupported_leaf_reason);
   return result;
 }
 
@@ -4419,6 +4505,10 @@ class LeafGuard {
       PyObject* /*value*/) const {
     return false;
   }
+  virtual GuardActualPartialLeafCapabilityReason
+  actual_partial_unsupported_reason(PyObject* /*value*/) const {
+    return GuardActualPartialLeafCapabilityReason::UnknownGuard;
+  }
   virtual bool emits_subtree_memo_token() const {
     return false;
   }
@@ -4511,6 +4601,11 @@ class LAMBDA_GUARD : public LeafGuard {
 
   bool supports_subtree_memo() const override {
     return false;
+  }
+
+  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
+      PyObject*) const override {
+    return GuardActualPartialLeafCapabilityReason::LambdaGuard;
   }
 
  private:
@@ -4672,6 +4767,11 @@ class EQUALS_MATCH : public LeafGuard {
     return guard_actual_partial_is_deeply_immutable(value);
   }
 
+  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
+      PyObject*) const override {
+    return GuardActualPartialLeafCapabilityReason::EqualsNotDeeplyImmutable;
+  }
+
  private:
   // value to compare against. This is py::object so that we hold on to the
   // original value and prevent garbage collection. We run EQUALS_MATCH only on
@@ -4723,6 +4823,11 @@ class RANGE_ITERATOR_MATCH : public LeafGuard {
     return start == _start && stop == _stop && iter->step == _step;
   }
 
+  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
+      PyObject*) const override {
+    return GuardActualPartialLeafCapabilityReason::RangeIteratorMatch;
+  }
+
  private:
   intptr_t _type_id;
   // Normalized representation of a range iterator.
@@ -4756,6 +4861,11 @@ class TUPLE_ITERATOR_LEN : public LeafGuard {
     return length == _length;
   }
 
+  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
+      PyObject*) const override {
+    return GuardActualPartialLeafCapabilityReason::TupleIteratorLen;
+  }
+
  private:
   // Length of the guarded list
   Py_ssize_t _length;
@@ -4783,6 +4893,11 @@ class LENGTH_CHECK : public LeafGuard {
     return PyList_CheckExact(value) || PyTuple_CheckExact(value);
   }
 
+  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
+      PyObject*) const override {
+    return GuardActualPartialLeafCapabilityReason::LengthNonExactSequence;
+  }
+
  private:
   // Length of the guarded list
   Py_ssize_t _length;
@@ -4805,6 +4920,11 @@ class DICT_LENGTH : public LeafGuard {
   bool supports_actual_partial_subtree_memo(
       PyObject* value) const override {
     return PyDict_CheckExact(value);
+  }
+
+  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
+      PyObject*) const override {
+    return GuardActualPartialLeafCapabilityReason::DictLengthNonExactDict;
   }
 
  private:
@@ -4851,6 +4971,11 @@ class MAPPING_KEYS_MATCH : public LeafGuard {
   bool supports_actual_partial_subtree_memo(
       PyObject* value) const override {
     return PyDict_CheckExact(value);
+  }
+
+  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
+      PyObject*) const override {
+    return GuardActualPartialLeafCapabilityReason::MappingKeysNonExactDict;
   }
 
  private:
@@ -5105,6 +5230,11 @@ class DICT_CONTAINS : public LeafGuard {
     return PyDict_CheckExact(value);
   }
 
+  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
+      PyObject*) const override {
+    return GuardActualPartialLeafCapabilityReason::DictContainsNonExactDict;
+  }
+
  private:
   int _contains;
   py::object _key;
@@ -5130,6 +5260,11 @@ class SET_CONTAINS : public LeafGuard {
       return false;
     }
     return result == _contains;
+  }
+
+  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
+      PyObject*) const override {
+    return GuardActualPartialLeafCapabilityReason::SetContains;
   }
 
  private:
@@ -5216,6 +5351,11 @@ class DUAL_LEVEL_MATCH : public LeafGuard {
       Py_DECREF(current_level);
       return current_level_int == _level;
     }
+  }
+
+  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
+      PyObject*) const override {
+    return GuardActualPartialLeafCapabilityReason::DualLevelMatch;
   }
 
  private:
@@ -5472,6 +5612,11 @@ class STORAGE_OVERLAPPING : public RelationalGuard {
     _checker->reset(_overlapping);
   }
 
+  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
+      PyObject*) const override {
+    return GuardActualPartialLeafCapabilityReason::StorageOverlapping;
+  }
+
  private:
   // Flag that indicates which kind of tensor this guard is collecting:
   //   1. Possibly overlapping tensors; or
@@ -5588,6 +5733,11 @@ class SYMBOLIC_SHAPE_GUARD : public RelationalGuard {
     _args_seen = 0;
   }
 
+  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
+      PyObject*) const override {
+    return GuardActualPartialLeafCapabilityReason::SymbolicShapeGuard;
+  }
+
  private:
   py::object _py_addr_keep_alive;
   size_t _args_seen{0}, _nargs_float, _nargs_int, _nargs;
@@ -5637,6 +5787,11 @@ class DYNAMIC_INDICES : public LeafGuard {
     return false;
   }
 
+  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
+      PyObject*) const override {
+    return GuardActualPartialLeafCapabilityReason::DynamicIndices;
+  }
+
  private:
   py::set _dynamic_indices;
 };
@@ -5661,6 +5816,11 @@ class DICT_VERSION : public LeafGuard {
   bool supports_actual_partial_subtree_memo(
       PyObject* value) const override {
     return PyDict_CheckExact(value);
+  }
+
+  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
+      PyObject*) const override {
+    return GuardActualPartialLeafCapabilityReason::DictVersionNonExactDict;
   }
 
   // Saved dict version.
@@ -6467,8 +6627,13 @@ class GuardManager {
           if (!guard->supports_actual_partial_subtree_memo(value)) {
             guard_actual_partial_mark_unsupported();
             if (guard_fast_plan_capability_census_enabled()) {
-              ++guard_actual_partial_capability_census
-                    .unsupported_leaf_capabilities;
+              auto& census = guard_actual_partial_capability_census;
+              ++census.unsupported_leaf_capabilities;
+              const auto reason =
+                  guard->actual_partial_unsupported_reason(value);
+              ++census.unsupported_leaf_capability_reasons
+                    [static_cast<size_t>(reason)];
+              census.last_unsupported_leaf_reason = reason;
             }
           }
           emit_actual_partial_token =
@@ -7809,6 +7974,11 @@ class DISPATCH_KEY_SET_MATCH : public LeafGuard {
 
   bool supports_subtree_memo() const override {
     return false;
+  }
+
+  GuardActualPartialLeafCapabilityReason actual_partial_unsupported_reason(
+      PyObject*) const override {
+    return GuardActualPartialLeafCapabilityReason::DispatchKeySetMatch;
   }
 
  private:

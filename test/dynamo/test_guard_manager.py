@@ -1841,6 +1841,13 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             assert census["code_accessor_proofs"] > 0, census
             assert census["unsupported_leaf_capabilities"] == 0, census
             assert census["unsupported_accessor_capabilities"] == 0, census
+            assert (
+                sum(census["unsupported_leaf_capability_reasons"].values())
+                == census["unsupported_leaf_capabilities"]
+            ), census
+            assert (
+                census["last_unsupported_leaf_capability_reason"] == "none"
+            ), census
             for name in (
                 "type_accessor_generic_dict_covered_owners",
                 "type_accessor_instance_attr_covered_owners",
@@ -1893,6 +1900,13 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             assert census["code_accessor_misses"] == 0, census
             assert census["unsupported_leaf_capabilities"] == 0, census
             assert census["unsupported_accessor_capabilities"] == 0, census
+            assert (
+                sum(census["unsupported_leaf_capability_reasons"].values())
+                == 0
+            ), census
+            assert (
+                census["last_unsupported_leaf_capability_reason"] == "none"
+            ), census
 
             class CustomGetattributeModel(torch.nn.Module):
                 def __init__(self):
