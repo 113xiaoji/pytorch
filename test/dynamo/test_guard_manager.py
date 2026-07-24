@@ -1965,6 +1965,11 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             assert census["instance_attr_owner_misses"] == 0, census
             assert census["instance_attr_type_misses"] == 0, census
             assert census["instance_attr_type_refreshes"] == 0, census
+            assert census["instance_attr_shadow_binding_records"] == 0, census
+            assert census["instance_attr_shadow_type_keys"] == 0, census
+            assert census["instance_attr_dynamic_binding_records"] == 0, census
+            assert census["instance_attr_dynamic_proofs"] == 0, census
+            assert census["instance_attr_dynamic_misses"] == 0, census
             assert census["static_module_attr_binding_records"] == 0, census
             assert census["static_module_attr_owner_proofs"] == 0, census
             assert census["static_module_attr_type_proofs"] == 0, census
@@ -2593,6 +2598,87 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 assert census["instance_attr_type_misses"] > 0, census
             finally:
                 del DescriptorMutationModel.scale
+
+            class ShadowValueModel(torch.nn.Module):
+                scale = None
+
+                def __init__(self):
+                    super().__init__()
+                    self.scale = torch.ones(2)
+
+                def forward(self, x):
+                    return self.scale + x + GLOBAL_DICT["used"]
+
+            guards._reset_guard_fast_plan_capability_census()
+            shadow_model = ShadowValueModel()
+            shadow_counter = CompileCounter()
+            shadow_compiled = torch.compile(
+                shadow_model, backend=shadow_counter, fullgraph=True
+            )
+            warm(shadow_compiled, x, torch.full((2,), 2.0))
+            census = guards._get_guard_fast_plan_capability_census()
+            assert census["instance_attr_shadow_binding_records"] > 0, census
+            assert census["instance_attr_shadow_type_keys"] > 0, census
+
+            ShadowValueModel.scale = property(
+                lambda self: torch.full((2,), 5.0)
+            )
+            try:
+                GLOBAL_DICT["noise"] = [250]
+                torch.testing.assert_close(
+                    shadow_compiled(x), torch.full((2,), 6.0)
+                )
+                assert shadow_counter.frame_count == 2, shadow_counter.frame_count
+                census = guards._get_guard_fast_plan_capability_census()
+                assert census["instance_attr_type_misses"] > 0, census
+            finally:
+                ShadowValueModel.scale = None
+
+            class InitialScaleDescriptor:
+                def __get__(self, obj, owner):
+                    if obj is None:
+                        return self
+                    return obj._scale
+
+                def __set__(self, obj, value):
+                    obj._scale = value
+
+            initial_scale_descriptor = InitialScaleDescriptor()
+
+            class DynamicDescriptorModel(torch.nn.Module):
+                scale = initial_scale_descriptor
+
+                def __init__(self):
+                    super().__init__()
+                    self._scale = torch.ones(2)
+
+                def forward(self, x):
+                    return self.scale + x + GLOBAL_DICT["used"]
+
+            guards._reset_guard_fast_plan_capability_census()
+            dynamic_model = DynamicDescriptorModel()
+            dynamic_counter = CompileCounter()
+            dynamic_compiled = torch.compile(
+                dynamic_model, backend=dynamic_counter, fullgraph=True
+            )
+            warm(dynamic_compiled, x, torch.full((2,), 2.0))
+            census = guards._get_guard_fast_plan_capability_census()
+            assert census["instance_attr_dynamic_binding_records"] > 0, census
+            assert census["instance_attr_dynamic_proofs"] > 0, census
+
+            DynamicDescriptorModel.scale = property(
+                lambda self: torch.full((2,), 5.0)
+            )
+            try:
+                GLOBAL_DICT["noise"] = [275]
+                torch.testing.assert_close(
+                    dynamic_compiled(x), torch.full((2,), 6.0)
+                )
+                assert dynamic_counter.frame_count == 2, dynamic_counter.frame_count
+                census = guards._get_guard_fast_plan_capability_census()
+                assert census["instance_attr_dynamic_misses"] > 0, census
+            finally:
+                DynamicDescriptorModel.scale = initial_scale_descriptor
 
             class RefreshModel(torch.nn.Module):
                 def __init__(self):
