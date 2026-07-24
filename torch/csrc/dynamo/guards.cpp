@@ -269,6 +269,9 @@ struct GuardActualPartialCapabilityCensus {
   uint64_t instance_attr_default_unsupported_non_unicode_key{0};
   uint64_t instance_attr_default_unsupported_type_version{0};
   uint64_t instance_attr_default_unsupported_instance_dict_shadow{0};
+  uint64_t instance_attr_default_shadow_plain_value{0};
+  uint64_t instance_attr_default_shadow_static_non_data_descriptor{0};
+  uint64_t instance_attr_default_shadow_heap_non_data_descriptor{0};
   uint64_t instance_attr_default_unsupported_data_descriptor{0};
   uint64_t instance_attr_default_unsupported_non_data_descriptor{0};
   uint64_t instance_attr_default_unsupported_type_attr_absent{0};
@@ -601,6 +604,22 @@ thread_local std::unordered_set<PyTypeObject*>
     guard_actual_partial_non_default_getattribute_types;
 thread_local std::vector<getattrofunc>
     guard_actual_partial_non_default_getattribute_slots;
+thread_local std::vector<std::pair<PyObject*, PyObject*>>
+    guard_actual_partial_default_shadow_owner_keys;
+thread_local std::vector<std::pair<PyObject*, PyObject*>>
+    guard_actual_partial_default_shadow_type_keys;
+thread_local std::vector<std::pair<PyObject*, PyObject*>>
+    guard_actual_partial_default_data_descriptor_owner_keys;
+
+static void guard_actual_partial_record_unique_pointer_pair(
+    std::vector<std::pair<PyObject*, PyObject*>>& pairs,
+    PyObject* first,
+    PyObject* second) {
+  const auto pair = std::make_pair(first, second);
+  if (std::find(pairs.begin(), pairs.end(), pair) == pairs.end()) {
+    pairs.push_back(pair);
+  }
+}
 
 static bool guard_fast_plan_enabled() {
   static const bool env_enabled =
@@ -3909,8 +3928,28 @@ static void guard_actual_partial_record_instance_attr_binding(
             exact_owner_dict && PyDict_GetItem(*dictptr, key) == expected &&
             type_attr != nullptr && !PyDescr_IsData(type_attr)) {
           ++census.instance_attr_default_unsupported_instance_dict_shadow;
+          guard_actual_partial_record_unique_pointer_pair(
+              guard_actual_partial_default_shadow_owner_keys, owner, key);
+          guard_actual_partial_record_unique_pointer_pair(
+              guard_actual_partial_default_shadow_type_keys,
+              reinterpret_cast<PyObject*>(record.owner_type),
+              key);
+          if (Py_TYPE(type_attr)->tp_descr_get == nullptr) {
+            ++census.instance_attr_default_shadow_plain_value;
+          } else if (
+              PyType_HasFeature(Py_TYPE(type_attr), Py_TPFLAGS_HEAPTYPE)) {
+            ++census
+                  .instance_attr_default_shadow_heap_non_data_descriptor;
+          } else {
+            ++census
+                  .instance_attr_default_shadow_static_non_data_descriptor;
+          }
         } else if (type_attr != nullptr && PyDescr_IsData(type_attr)) {
           ++census.instance_attr_default_unsupported_data_descriptor;
+          guard_actual_partial_record_unique_pointer_pair(
+              guard_actual_partial_default_data_descriptor_owner_keys,
+              owner,
+              key);
         } else if (type_attr != nullptr) {
           ++census.instance_attr_default_unsupported_non_data_descriptor;
         } else if (
@@ -4041,6 +4080,9 @@ static void guard_actual_partial_reset_capability_census() {
   guard_actual_partial_type_accessor_any_proof_covered.clear();
   guard_actual_partial_non_default_getattribute_types.clear();
   guard_actual_partial_non_default_getattribute_slots.clear();
+  guard_actual_partial_default_shadow_owner_keys.clear();
+  guard_actual_partial_default_shadow_type_keys.clear();
+  guard_actual_partial_default_data_descriptor_owner_keys.clear();
 }
 
 static const char* guard_actual_partial_leaf_capability_reason_name(
@@ -4193,8 +4235,20 @@ static py::dict guard_actual_partial_get_capability_census() {
       census.instance_attr_default_unsupported_type_version;
   result["instance_attr_default_unsupported_instance_dict_shadow"] =
       census.instance_attr_default_unsupported_instance_dict_shadow;
+  result["instance_attr_default_shadow_plain_value"] =
+      census.instance_attr_default_shadow_plain_value;
+  result["instance_attr_default_shadow_static_non_data_descriptor"] =
+      census.instance_attr_default_shadow_static_non_data_descriptor;
+  result["instance_attr_default_shadow_heap_non_data_descriptor"] =
+      census.instance_attr_default_shadow_heap_non_data_descriptor;
+  result["instance_attr_default_shadow_unique_owner_keys"] =
+      guard_actual_partial_default_shadow_owner_keys.size();
+  result["instance_attr_default_shadow_unique_type_keys"] =
+      guard_actual_partial_default_shadow_type_keys.size();
   result["instance_attr_default_unsupported_data_descriptor"] =
       census.instance_attr_default_unsupported_data_descriptor;
+  result["instance_attr_default_data_descriptor_unique_owner_keys"] =
+      guard_actual_partial_default_data_descriptor_owner_keys.size();
   result["instance_attr_default_unsupported_non_data_descriptor"] =
       census.instance_attr_default_unsupported_non_data_descriptor;
   result["instance_attr_default_unsupported_type_attr_absent"] =
