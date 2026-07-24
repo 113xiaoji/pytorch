@@ -163,6 +163,24 @@ enum class GuardActualPartialAccessorCensusKind : uint8_t {
   DictGetItem,
   ListGetItem,
   TupleGetItem,
+  GetItem,
+  SetGetItem,
+  TensorProperty,
+  Indexed,
+  Grad,
+  FuncDefaults,
+  FuncKwDefaults,
+  Globals,
+  Type,
+  TypeDict,
+  TypeMRO,
+  TupleIteratorGetItem,
+  GlobalWeakRef,
+  WeakRefCall,
+  Code,
+  Closure,
+  CallFunctionNoArgs,
+  PythonLambda,
 };
 
 struct GuardActualPartialCapabilityCensus {
@@ -178,6 +196,24 @@ struct GuardActualPartialCapabilityCensus {
   uint64_t dict_getitem_accessors{0};
   uint64_t list_getitem_accessors{0};
   uint64_t tuple_getitem_accessors{0};
+  uint64_t get_item_accessors{0};
+  uint64_t set_getitem_accessors{0};
+  uint64_t tensor_property_accessors{0};
+  uint64_t indexed_accessors{0};
+  uint64_t grad_accessors{0};
+  uint64_t func_defaults_accessors{0};
+  uint64_t func_kw_defaults_accessors{0};
+  uint64_t globals_accessors{0};
+  uint64_t type_accessors{0};
+  uint64_t type_dict_accessors{0};
+  uint64_t type_mro_accessors{0};
+  uint64_t tuple_iterator_getitem_accessors{0};
+  uint64_t global_weakref_accessors{0};
+  uint64_t weakref_call_accessors{0};
+  uint64_t code_accessors{0};
+  uint64_t closure_accessors{0};
+  uint64_t call_function_no_args_accessors{0};
+  uint64_t python_lambda_accessors{0};
   uint64_t other_accessors{0};
   uint64_t owner_path_records{0};
   uint64_t owner_path_unique_records{0};
@@ -2886,6 +2922,60 @@ static void guard_actual_partial_record_accessor_capability(
     case GuardActualPartialAccessorCensusKind::TupleGetItem:
       ++census.tuple_getitem_accessors;
       break;
+    case GuardActualPartialAccessorCensusKind::GetItem:
+      ++census.get_item_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::SetGetItem:
+      ++census.set_getitem_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::TensorProperty:
+      ++census.tensor_property_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::Indexed:
+      ++census.indexed_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::Grad:
+      ++census.grad_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::FuncDefaults:
+      ++census.func_defaults_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::FuncKwDefaults:
+      ++census.func_kw_defaults_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::Globals:
+      ++census.globals_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::Type:
+      ++census.type_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::TypeDict:
+      ++census.type_dict_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::TypeMRO:
+      ++census.type_mro_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::TupleIteratorGetItem:
+      ++census.tuple_iterator_getitem_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::GlobalWeakRef:
+      ++census.global_weakref_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::WeakRefCall:
+      ++census.weakref_call_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::Code:
+      ++census.code_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::Closure:
+      ++census.closure_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::CallFunctionNoArgs:
+      ++census.call_function_no_args_accessors;
+      break;
+    case GuardActualPartialAccessorCensusKind::PythonLambda:
+      ++census.python_lambda_accessors;
+      break;
     case GuardActualPartialAccessorCensusKind::Other:
       ++census.other_accessors;
       break;
@@ -3084,6 +3174,26 @@ static py::dict guard_actual_partial_get_capability_census() {
   result["dict_getitem_accessors"] = census.dict_getitem_accessors;
   result["list_getitem_accessors"] = census.list_getitem_accessors;
   result["tuple_getitem_accessors"] = census.tuple_getitem_accessors;
+  result["get_item_accessors"] = census.get_item_accessors;
+  result["set_getitem_accessors"] = census.set_getitem_accessors;
+  result["tensor_property_accessors"] = census.tensor_property_accessors;
+  result["indexed_accessors"] = census.indexed_accessors;
+  result["grad_accessors"] = census.grad_accessors;
+  result["func_defaults_accessors"] = census.func_defaults_accessors;
+  result["func_kw_defaults_accessors"] = census.func_kw_defaults_accessors;
+  result["globals_accessors"] = census.globals_accessors;
+  result["type_accessors"] = census.type_accessors;
+  result["type_dict_accessors"] = census.type_dict_accessors;
+  result["type_mro_accessors"] = census.type_mro_accessors;
+  result["tuple_iterator_getitem_accessors"] =
+      census.tuple_iterator_getitem_accessors;
+  result["global_weakref_accessors"] = census.global_weakref_accessors;
+  result["weakref_call_accessors"] = census.weakref_call_accessors;
+  result["code_accessors"] = census.code_accessors;
+  result["closure_accessors"] = census.closure_accessors;
+  result["call_function_no_args_accessors"] =
+      census.call_function_no_args_accessors;
+  result["python_lambda_accessors"] = census.python_lambda_accessors;
   result["other_accessors"] = census.other_accessors;
   result["owner_path_records"] = census.owner_path_records;
   result["owner_path_unique_records"] = census.owner_path_unique_records;
@@ -7609,6 +7719,11 @@ class GetGenericDictGuardAccessor : public GuardAccessor {
  */
 class GetItemGuardAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::GetItem;
+  }
+
   GetItemGuardAccessor(
       RootGuardManager* root,
       py::object name,
@@ -7985,6 +8100,11 @@ class ListGetItemGuardAccessor : public GuardAccessor {
  */
 class SetGetItemGuardAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::SetGetItem;
+  }
+
   SetGetItemGuardAccessor(
       RootGuardManager* root,
       const py::object& index,
@@ -8158,6 +8278,10 @@ std::string to_string(TensorProperty prop) {
 template <TensorProperty _prop>
 class TensorPropertyGuardAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::TensorProperty;
+  }
 
   TensorPropertyGuardAccessor(
       RootGuardManager* root,
@@ -8287,6 +8411,10 @@ class TensorPropertyGuardAccessor : public GuardAccessor {
  */
 class IndexedGuardAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::Indexed;
+  }
 
   IndexedGuardAccessor(
       RootGuardManager* root,
@@ -8350,6 +8478,10 @@ class IndexedGuardAccessor : public GuardAccessor {
  */
 class GradGuardAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::Grad;
+  }
 
   GradGuardAccessor(
       RootGuardManager* root,
@@ -8421,6 +8553,10 @@ class GradGuardAccessor : public GuardAccessor {
  */
 class FuncDefaultsGuardAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::FuncDefaults;
+  }
 
   FuncDefaultsGuardAccessor(
       RootGuardManager* root,
@@ -8498,6 +8634,10 @@ class FuncDefaultsGuardAccessor : public GuardAccessor {
  */
 class FuncKwDefaultsGuardAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::FuncKwDefaults;
+  }
 
   FuncKwDefaultsGuardAccessor(
       RootGuardManager* root,
@@ -8576,6 +8716,10 @@ class FuncKwDefaultsGuardAccessor : public GuardAccessor {
  */
 class GlobalsGuardAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::Globals;
+  }
 
   GlobalsGuardAccessor(
       RootGuardManager* root,
@@ -8643,6 +8787,10 @@ class GlobalsGuardAccessor : public GuardAccessor {
  */
 class TypeGuardAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::Type;
+  }
 
   // name = __type_accessor__, a unique string used as attribute name.
   TypeGuardAccessor(
@@ -8696,6 +8844,11 @@ class TypeGuardAccessor : public GuardAccessor {
  */
 class TypeDictGuardAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::TypeDict;
+  }
+
   // name = __type_dict_accessor__, a unique string used as attribute name.
   TypeDictGuardAccessor(
       RootGuardManager* root,
@@ -8757,6 +8910,11 @@ class TypeDictGuardAccessor : public GuardAccessor {
  */
 class TypeMROGuardAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::TypeMRO;
+  }
+
   // name = __type_mro_accessor__, a unique string used as attribute name.
   TypeMROGuardAccessor(
       RootGuardManager* root,
@@ -8810,6 +8968,10 @@ class TypeMROGuardAccessor : public GuardAccessor {
  */
 class TupleIteratorGetItemAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::TupleIteratorGetItem;
+  }
 
   TupleIteratorGetItemAccessor(
       RootGuardManager* root,
@@ -8890,6 +9052,10 @@ class TupleIteratorGetItemAccessor : public GuardAccessor {
  */
 class GlobalWeakRefGuardAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::GlobalWeakRef;
+  }
 
   GlobalWeakRefGuardAccessor(
       RootGuardManager* root,
@@ -9002,6 +9168,10 @@ class GlobalWeakRefGuardAccessor : public GuardAccessor {
  */
 class WeakRefCallGuardAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::WeakRefCall;
+  }
 
   WeakRefCallGuardAccessor(
       RootGuardManager* root,
@@ -9089,6 +9259,11 @@ class WeakRefCallGuardAccessor : public GuardAccessor {
  */
 class CodeGuardAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::Code;
+  }
+
   // name = __type_mro_accessor__, a unique string used as attribute name.
   CodeGuardAccessor(
 
@@ -9166,6 +9341,11 @@ class CodeGuardAccessor : public GuardAccessor {
  */
 class ClosureGuardAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::Closure;
+  }
+
   // name = __type_mro_accessor__, a unique string used as attribute name.
   ClosureGuardAccessor(
       RootGuardManager* root,
@@ -9242,6 +9422,10 @@ class ClosureGuardAccessor : public GuardAccessor {
  */
 class CallFunctionNoArgsGuardAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::CallFunctionNoArgs;
+  }
 
   CallFunctionNoArgsGuardAccessor(
       RootGuardManager* root,
@@ -9329,6 +9513,10 @@ class CallFunctionNoArgsGuardAccessor : public GuardAccessor {
  */
 class PythonLambdaGuardAccessor : public GuardAccessor {
  public:
+  GuardActualPartialAccessorCensusKind actual_partial_census_kind()
+      const override {
+    return GuardActualPartialAccessorCensusKind::PythonLambda;
+  }
 
   PythonLambdaGuardAccessor(
       RootGuardManager* root,
