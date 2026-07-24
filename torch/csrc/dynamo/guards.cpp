@@ -251,6 +251,8 @@ struct GuardActualPartialCapabilityCensus {
   uint64_t type_accessor_coverage_failures{0};
   uint64_t code_accessor_proofs{0};
   uint64_t code_accessor_misses{0};
+  uint64_t unsupported_leaf_capabilities{0};
+  uint64_t unsupported_accessor_capabilities{0};
 };
 
 enum class GuardActualPartialAccessorRecordKind : uint8_t {
@@ -3502,6 +3504,10 @@ static py::dict guard_actual_partial_get_capability_census() {
       census.type_accessor_coverage_failures;
   result["code_accessor_proofs"] = census.code_accessor_proofs;
   result["code_accessor_misses"] = census.code_accessor_misses;
+  result["unsupported_leaf_capabilities"] =
+      census.unsupported_leaf_capabilities;
+  result["unsupported_accessor_capabilities"] =
+      census.unsupported_accessor_capabilities;
   return result;
 }
 
@@ -4409,7 +4415,14 @@ class LeafGuard {
   virtual bool supports_subtree_memo() const {
     return true;
   }
+  virtual bool supports_actual_partial_subtree_memo(
+      PyObject* /*value*/) const {
+    return false;
+  }
   virtual bool emits_subtree_memo_token() const {
+    return false;
+  }
+  virtual bool emits_actual_partial_subtree_memo_token() const {
     return false;
   }
   virtual bool emits_subtree_memo_token_for_frame_locals() const {
@@ -4521,6 +4534,10 @@ class TYPE_MATCH : public LeafGuard {
     return Py_TYPE(value) == (void*)_expected;
   }
 
+  bool supports_actual_partial_subtree_memo(PyObject*) const override {
+    return true;
+  }
+
  private:
   // id of the type of the original object.
   intptr_t _expected;
@@ -4543,6 +4560,10 @@ class ID_MATCH : public LeafGuard {
     return value == (void*)_expected;
   }
 
+  bool supports_actual_partial_subtree_memo(PyObject*) const override {
+    return true;
+  }
+
  private:
   // id of the original object.
   intptr_t _expected;
@@ -4558,6 +4579,10 @@ class NONE_MATCH : public LeafGuard {
   bool check_nopybind(PyObject* value) override { // borrowed ref
     return value == Py_None;
   }
+
+  bool supports_actual_partial_subtree_memo(PyObject*) const override {
+    return true;
+  }
 };
 
 class TRUE_MATCH : public LeafGuard {
@@ -4569,6 +4594,10 @@ class TRUE_MATCH : public LeafGuard {
 
   bool check_nopybind(PyObject* value) override { // borrowed ref
     return value == Py_True;
+  }
+
+  bool supports_actual_partial_subtree_memo(PyObject*) const override {
+    return true;
   }
 };
 
@@ -4582,7 +4611,31 @@ class FALSE_MATCH : public LeafGuard {
   bool check_nopybind(PyObject* value) override { // borrowed ref
     return value == Py_False;
   }
+
+  bool supports_actual_partial_subtree_memo(PyObject*) const override {
+    return true;
+  }
 };
+
+static bool guard_actual_partial_is_deeply_immutable(
+    PyObject* value,
+    size_t depth = 0) {
+  if (value == Py_None || PyBool_Check(value) || PyLong_CheckExact(value) ||
+      PyFloat_CheckExact(value) || PyComplex_CheckExact(value) ||
+      PyUnicode_CheckExact(value) || PyBytes_CheckExact(value)) {
+    return true;
+  }
+  if (!PyTuple_CheckExact(value) || depth >= 32) {
+    return false;
+  }
+  for (Py_ssize_t i = 0; i < PyTuple_GET_SIZE(value); ++i) {
+    if (!guard_actual_partial_is_deeply_immutable(
+            PyTuple_GET_ITEM(value, i), depth + 1)) {
+      return false;
+    }
+  }
+  return true;
+}
 
 class EQUALS_MATCH : public LeafGuard {
  public:
@@ -4612,6 +4665,11 @@ class EQUALS_MATCH : public LeafGuard {
       return result;
     }
     return true;
+  }
+
+  bool supports_actual_partial_subtree_memo(
+      PyObject* value) const override {
+    return guard_actual_partial_is_deeply_immutable(value);
   }
 
  private:
@@ -4720,6 +4778,11 @@ class LENGTH_CHECK : public LeafGuard {
     return PySequence_Length(value) == _length;
   }
 
+  bool supports_actual_partial_subtree_memo(
+      PyObject* value) const override {
+    return PyList_CheckExact(value) || PyTuple_CheckExact(value);
+  }
+
  private:
   // Length of the guarded list
   Py_ssize_t _length;
@@ -4739,6 +4802,11 @@ class DICT_LENGTH : public LeafGuard {
     return PyDict_Check(value) && PyDict_Size(value) == _length;
   }
 
+  bool supports_actual_partial_subtree_memo(
+      PyObject* value) const override {
+    return PyDict_CheckExact(value);
+  }
+
  private:
   // Length of the guarded dict
   Py_ssize_t _length;
@@ -4752,6 +4820,10 @@ class NOT_NONE : public LeafGuard {
 
   bool check_nopybind(PyObject* value) override { // borrowed ref
     return value != Py_None;
+  }
+
+  bool supports_actual_partial_subtree_memo(PyObject*) const override {
+    return true;
   }
 };
 
@@ -4774,6 +4846,11 @@ class MAPPING_KEYS_MATCH : public LeafGuard {
     int result = PyObject_RichCompareBool(keys, _keys.ptr(), Py_EQ);
     Py_DECREF(keys);
     return result;
+  }
+
+  bool supports_actual_partial_subtree_memo(
+      PyObject* value) const override {
+    return PyDict_CheckExact(value);
   }
 
  private:
@@ -4807,6 +4884,9 @@ class DEFAULT_DEVICE : public LeafGuard {
   }
 
   bool supports_subtree_memo() const override {
+    return true;
+  }
+  bool supports_actual_partial_subtree_memo(PyObject*) const override {
     return true;
   }
   bool emits_subtree_memo_token() const override {
@@ -4893,6 +4973,9 @@ class GLOBAL_STATE : public LeafGuard {
   bool supports_subtree_memo() const override {
     return true;
   }
+  bool supports_actual_partial_subtree_memo(PyObject*) const override {
+    return true;
+  }
   bool emits_subtree_memo_token() const override {
     return true;
   }
@@ -4944,6 +5027,14 @@ class NO_HASATTR : public LeafGuard {
 
   bool check_nopybind(PyObject* value) override { // borrowed ref
     return PyObject_HasAttr(value, _attr_name.ptr()) == 0;
+  }
+
+  bool supports_actual_partial_subtree_memo(PyObject*) const override {
+    return true;
+  }
+
+  bool emits_actual_partial_subtree_memo_token() const override {
+    return true;
   }
 
   bool emits_subtree_memo_token() const override {
@@ -5009,6 +5100,11 @@ class DICT_CONTAINS : public LeafGuard {
     return result == _contains;
   }
 
+  bool supports_actual_partial_subtree_memo(
+      PyObject* value) const override {
+    return PyDict_CheckExact(value);
+  }
+
  private:
   int _contains;
   py::object _key;
@@ -5055,6 +5151,10 @@ class FLOAT_IS_NAN : public LeafGuard {
     }
     return std::isnan(PyFloat_AsDouble(value));
   }
+
+  bool supports_actual_partial_subtree_memo(PyObject*) const override {
+    return true;
+  }
 };
 
 // Check if the float is nan
@@ -5071,6 +5171,10 @@ class COMPLEX_IS_NAN : public LeafGuard {
     }
     Py_complex c_value = PyComplex_AsCComplex(value);
     return std::isnan(c_value.real) || std::isnan(c_value.imag);
+  }
+
+  bool supports_actual_partial_subtree_memo(PyObject*) const override {
+    return true;
   }
 };
 
@@ -5211,6 +5315,9 @@ class OBJECT_ALIASING : public RelationalGuard {
   bool supports_subtree_memo() const override {
     return true;
   }
+  bool supports_actual_partial_subtree_memo(PyObject*) const override {
+    return true;
+  }
   bool emits_subtree_memo_token() const override {
     return true;
   }
@@ -5304,6 +5411,9 @@ class NO_TENSOR_ALIASING : public RelationalGuard {
   }
 
   bool supports_subtree_memo() const override {
+    return true;
+  }
+  bool supports_actual_partial_subtree_memo(PyObject*) const override {
     return true;
   }
   bool emits_subtree_memo_token() const override {
@@ -5548,6 +5658,11 @@ class DICT_VERSION : public LeafGuard {
     return PyDict_Check(value) && get_dict_version_unchecked(value) == _tag;
   }
 
+  bool supports_actual_partial_subtree_memo(
+      PyObject* value) const override {
+    return PyDict_CheckExact(value);
+  }
+
   // Saved dict version.
   uint64_t _tag;
 };
@@ -5650,6 +5765,10 @@ class GuardAccessor {
   bool check_child_manager_nopybind(PyObject* obj);
   virtual bool supports_subtree_memo() const {
     return true;
+  }
+  virtual bool supports_actual_partial_subtree_memo(
+      PyObject* /*parent*/) const {
+    return false;
   }
   virtual GuardActualPartialAccessorCensusKind
   actual_partial_census_kind() const {
@@ -6341,9 +6460,19 @@ class GuardManager {
   bool check_leaf_guards_nopybind(T* value) {
     for (const auto& guard : _leaf_guards) {
       bool result = false;
+      bool emit_actual_partial_token = false;
       if constexpr (std::is_same_v<T, PyObject>) {
         if (C10_UNLIKELY(
                 guard_actual_partial_is_recording_source(_source))) {
+          if (!guard->supports_actual_partial_subtree_memo(value)) {
+            guard_actual_partial_mark_unsupported();
+            if (guard_fast_plan_capability_census_enabled()) {
+              ++guard_actual_partial_capability_census
+                    .unsupported_leaf_capabilities;
+            }
+          }
+          emit_actual_partial_token =
+              guard->emits_actual_partial_subtree_memo_token();
           guard_actual_partial_record_leaf_capability(
               guard->emits_subtree_memo_token(),
               guard->is_actual_partial_no_hasattr_guard());
@@ -6352,7 +6481,8 @@ class GuardManager {
       if (C10_UNLIKELY(active_guard_subtree_memo_recorder != nullptr)) {
         bool emit_subtree_memo_token = false;
         if constexpr (std::is_same_v<T, PyObject>) {
-          emit_subtree_memo_token = guard->emits_subtree_memo_token();
+          emit_subtree_memo_token = emit_actual_partial_token ||
+              guard->emits_subtree_memo_token();
         } else {
           emit_subtree_memo_token =
               guard->emits_subtree_memo_token_for_frame_locals();
@@ -6411,6 +6541,13 @@ class GuardManager {
               GuardActualPartialAccessorCensusKind::Code) {
             guard_actual_partial_record_code_accessor(
                 value, accessor->get_source());
+          }
+        }
+        if (!accessor->supports_actual_partial_subtree_memo(census_parent)) {
+          guard_actual_partial_mark_unsupported();
+          if (guard_fast_plan_capability_census_enabled()) {
+            ++guard_actual_partial_capability_census
+                  .unsupported_accessor_capabilities;
           }
         }
         guard_actual_partial_record_accessor_capability(
@@ -7605,6 +7742,9 @@ class TORCH_FUNCTION_MODE_STACK : public LeafGuard {
   bool supports_subtree_memo() const override {
     return true;
   }
+  bool supports_actual_partial_subtree_memo(PyObject*) const override {
+    return true;
+  }
   bool emits_subtree_memo_token() const override {
     return true;
   }
@@ -7769,8 +7909,14 @@ class TENSOR_MATCH : public LeafGuard {
   bool supports_subtree_memo() const override {
     return _supports_subtree_memo_token;
   }
+  bool supports_actual_partial_subtree_memo(PyObject*) const override {
+    return true;
+  }
   bool emits_subtree_memo_token() const override {
     return _supports_subtree_memo_token;
+  }
+  bool emits_actual_partial_subtree_memo_token() const override {
+    return true;
   }
 
   bool append_subtree_memo_token(
@@ -7797,6 +7943,10 @@ class TENSOR_MATCH : public LeafGuard {
  */
 class GetAttrGuardAccessor : public GuardAccessor {
  public:
+
+  bool supports_actual_partial_subtree_memo(PyObject*) const override {
+    return true;
+  }
 
   GuardActualPartialAccessorCensusKind actual_partial_census_kind()
       const override {
@@ -7886,6 +8036,10 @@ class GetAttrGuardAccessor : public GuardAccessor {
 class GenericGetAttrGuardAccessor : public GuardAccessor {
  public:
 
+  bool supports_actual_partial_subtree_memo(PyObject*) const override {
+    return true;
+  }
+
   GuardActualPartialAccessorCensusKind actual_partial_census_kind()
       const override {
     return GuardActualPartialAccessorCensusKind::GenericGetAttr;
@@ -7972,6 +8126,10 @@ class GenericGetAttrGuardAccessor : public GuardAccessor {
  */
 class GetGenericDictGuardAccessor : public GuardAccessor {
  public:
+  bool supports_actual_partial_subtree_memo(PyObject*) const override {
+    return true;
+  }
+
   GuardActualPartialAccessorCensusKind actual_partial_census_kind()
       const override {
     return GuardActualPartialAccessorCensusKind::GetGenericDict;
@@ -8135,6 +8293,10 @@ class GetItemGuardAccessor : public GuardAccessor {
  */
 class FrameLocalsGuardAccessor : public GuardAccessor {
  public:
+  bool supports_actual_partial_subtree_memo(PyObject*) const override {
+    return true;
+  }
+
   GuardActualPartialAccessorCensusKind actual_partial_census_kind()
       const override {
     return GuardActualPartialAccessorCensusKind::FrameLocals;
@@ -8267,6 +8429,11 @@ class FrameLocalsGuardAccessor : public GuardAccessor {
  */
 class DictGetItemGuardAccessor : public GuardAccessor {
  public:
+  bool supports_actual_partial_subtree_memo(
+      PyObject* parent) const override {
+    return PyDict_CheckExact(parent);
+  }
+
   GuardActualPartialAccessorCensusKind actual_partial_census_kind()
       const override {
     return GuardActualPartialAccessorCensusKind::DictGetItem;
@@ -8360,6 +8527,11 @@ class DictGetItemGuardAccessor : public GuardAccessor {
  */
 class ListGetItemGuardAccessor : public GuardAccessor {
  public:
+  bool supports_actual_partial_subtree_memo(
+      PyObject* parent) const override {
+    return PyList_CheckExact(parent);
+  }
+
   GuardActualPartialAccessorCensusKind actual_partial_census_kind()
       const override {
     return GuardActualPartialAccessorCensusKind::ListGetItem;
@@ -8517,6 +8689,11 @@ class SetGetItemGuardAccessor : public GuardAccessor {
  */
 class TupleGetItemGuardAccessor : public GuardAccessor {
  public:
+  bool supports_actual_partial_subtree_memo(
+      PyObject* parent) const override {
+    return PyTuple_CheckExact(parent);
+  }
+
   GuardActualPartialAccessorCensusKind actual_partial_census_kind()
       const override {
     return GuardActualPartialAccessorCensusKind::TupleGetItem;
@@ -9122,6 +9299,10 @@ class GlobalsGuardAccessor : public GuardAccessor {
  */
 class TypeGuardAccessor : public GuardAccessor {
  public:
+  bool supports_actual_partial_subtree_memo(PyObject*) const override {
+    return true;
+  }
+
   GuardActualPartialAccessorCensusKind actual_partial_census_kind()
       const override {
     return GuardActualPartialAccessorCensusKind::Type;
@@ -9594,6 +9775,10 @@ class WeakRefCallGuardAccessor : public GuardAccessor {
  */
 class CodeGuardAccessor : public GuardAccessor {
  public:
+  bool supports_actual_partial_subtree_memo(PyObject*) const override {
+    return true;
+  }
+
   GuardActualPartialAccessorCensusKind actual_partial_census_kind()
       const override {
     return GuardActualPartialAccessorCensusKind::Code;
