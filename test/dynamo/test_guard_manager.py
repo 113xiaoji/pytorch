@@ -1915,6 +1915,11 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             ), census
             assert census["static_module_attr_owner_misses"] == 0, census
             assert census["static_module_attr_type_misses"] == 0, census
+            assert (
+                census["static_module_dynamic_attr_binding_records"] == 0
+            ), census
+            assert census["static_module_dynamic_attr_proofs"] == 0, census
+            assert census["static_module_dynamic_attr_misses"] == 0, census
             assert census["type_accessor_unique_owners"] == 0, census
             assert census["type_accessor_unique_types"] == 0, census
             assert census["code_accessor_unique_functions"] == 0, census
@@ -2043,6 +2048,51 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 + census["generic_dict_owner_misses"]
                 > 0
             ), census
+
+            dynamic_values = [torch.ones(2)]
+
+            def module_getattr(name):
+                if name == "dynamic_scale":
+                    return dynamic_values[0]
+                raise AttributeError(name)
+
+            namespace.__getattr__ = module_getattr
+
+            class ModuleGetattrModel(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.namespace = namespace
+
+                def forward(self, x):
+                    return self.namespace.dynamic_scale + x
+
+            guards._reset_guard_fast_plan_capability_census()
+            module_getattr_counter = CompileCounter()
+            module_getattr_compiled = torch.compile(
+                ModuleGetattrModel(),
+                backend=module_getattr_counter,
+                fullgraph=True,
+            )
+            for _ in range(8):
+                torch.testing.assert_close(
+                    module_getattr_compiled(x), torch.ones(2)
+                )
+            census = guards._get_guard_fast_plan_capability_census()
+            assert (
+                census["static_module_dynamic_attr_binding_records"] > 0
+            ), census
+            assert census["static_module_dynamic_attr_proofs"] > 0, census
+            assert census["static_module_dynamic_attr_misses"] == 0, census
+
+            dynamic_values[0] = torch.full((2,), 4.0)
+            torch.testing.assert_close(
+                module_getattr_compiled(x), torch.full((2,), 4.0)
+            )
+            assert module_getattr_counter.frame_count == 2, (
+                module_getattr_counter.frame_count
+            )
+            census = guards._get_guard_fast_plan_capability_census()
+            assert census["static_module_dynamic_attr_misses"] > 0, census
 
             class DynamicModule(types.ModuleType):
                 def __getattribute__(self, name):
