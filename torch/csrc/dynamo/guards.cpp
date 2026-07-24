@@ -438,6 +438,8 @@ static bool guard_subtree_type_version_is_valid(PyTypeObject* type);
 static bool guard_subtree_ensure_type_version(
     PyTypeObject* type,
     PyObject* lookup_key);
+static bool guard_actual_partial_uses_default_getattribute(
+    PyTypeObject* type);
 
 struct GuardSubtreeTypeMethodTypeProof {
   py::object type;
