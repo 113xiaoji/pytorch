@@ -1905,6 +1905,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             assert census["unsupported_leaf_capabilities"] == 0, census
             assert census["unsupported_accessor_capabilities"] == 0, census
             assert census["equals_safe_constant_admissions"] == 0, census
+            assert census["unsupported_equals_types"] == {}, census
             assert (
                 sum(census["unsupported_leaf_capability_reasons"].values())
                 == 0

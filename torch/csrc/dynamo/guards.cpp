@@ -275,6 +275,7 @@ struct GuardActualPartialCapabilityCensus {
   uint64_t unsupported_leaf_capabilities{0};
   uint64_t unsupported_accessor_capabilities{0};
   uint64_t equals_safe_constant_admissions{0};
+  std::unordered_map<std::string, uint64_t> unsupported_equals_types;
   std::array<
       uint64_t,
       static_cast<size_t>(GuardActualPartialLeafCapabilityReason::Count)>
@@ -3581,6 +3582,11 @@ static py::dict guard_actual_partial_get_capability_census() {
       census.unsupported_accessor_capabilities;
   result["equals_safe_constant_admissions"] =
       census.equals_safe_constant_admissions;
+  py::dict unsupported_equals_types;
+  for (const auto& [type_name, count] : census.unsupported_equals_types) {
+    unsupported_equals_types[py::str(type_name)] = count;
+  }
+  result["unsupported_equals_types"] = std::move(unsupported_equals_types);
   py::dict unsupported_leaf_reasons;
   for (size_t i = 1;
        i < static_cast<size_t>(
@@ -6652,6 +6658,13 @@ class GuardManager {
               ++census.unsupported_leaf_capability_reasons
                     [static_cast<size_t>(reason)];
               census.last_unsupported_leaf_reason = reason;
+              if (reason ==
+                  GuardActualPartialLeafCapabilityReason::
+                      EqualsNotDeeplyImmutable) {
+                const char* type_name = Py_TYPE(value)->tp_name;
+                ++census.unsupported_equals_types
+                      [type_name != nullptr ? type_name : "<unknown>"];
+              }
             }
           }
           emit_actual_partial_token =
