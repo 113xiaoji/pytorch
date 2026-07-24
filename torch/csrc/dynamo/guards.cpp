@@ -262,6 +262,7 @@ struct GuardActualPartialCapabilityCensus {
   uint64_t instance_attr_non_default_static_type{0};
   uint64_t instance_attr_non_default_exact_tensor{0};
   uint64_t instance_attr_non_default_exact_module{0};
+  uint64_t instance_attr_non_default_exact_type_object{0};
   uint64_t instance_attr_non_default_exact_dict_value{0};
   uint64_t instance_attr_non_default_type_attr_absent{0};
   uint64_t instance_attr_unique_owners{0};
@@ -3726,6 +3727,9 @@ static void guard_actual_partial_record_instance_attr_binding(
         if (PyModule_CheckExact(owner)) {
           ++census.instance_attr_non_default_exact_module;
         }
+        if (PyType_Check(owner) && Py_TYPE(owner) == &PyType_Type) {
+          ++census.instance_attr_non_default_exact_type_object;
+        }
         if (exact_owner_dict && PyUnicode_Check(key) &&
             PyDict_GetItem(*dictptr, key) == expected) {
           ++census.instance_attr_non_default_exact_dict_value;
@@ -3987,6 +3991,8 @@ static py::dict guard_actual_partial_get_capability_census() {
       census.instance_attr_non_default_exact_tensor;
   result["instance_attr_non_default_exact_module"] =
       census.instance_attr_non_default_exact_module;
+  result["instance_attr_non_default_exact_type_object"] =
+      census.instance_attr_non_default_exact_type_object;
   result["instance_attr_non_default_exact_dict_value"] =
       census.instance_attr_non_default_exact_dict_value;
   result["instance_attr_non_default_type_attr_absent"] =

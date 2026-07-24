@@ -1884,6 +1884,9 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             assert census["instance_attr_non_default_exact_tensor"] == 0, census
             assert census["instance_attr_non_default_exact_module"] == 0, census
             assert (
+                census["instance_attr_non_default_exact_type_object"] == 0
+            ), census
+            assert (
                 census["instance_attr_non_default_exact_dict_value"] == 0
             ), census
             assert (
