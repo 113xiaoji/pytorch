@@ -1923,6 +1923,19 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             ), census
             assert census["static_module_dynamic_attr_proofs"] == 0, census
             assert census["static_module_dynamic_attr_misses"] == 0, census
+            assert census["static_type_attr_binding_records"] == 0, census
+            assert census["static_type_attr_owner_proofs"] == 0, census
+            assert census["static_type_attr_type_proofs"] == 0, census
+            assert (
+                census["static_type_attr_owner_proofs_removed"] == 0
+            ), census
+            assert census["static_type_attr_owner_misses"] == 0, census
+            assert census["static_type_attr_type_misses"] == 0, census
+            assert (
+                census["static_type_dynamic_attr_binding_records"] == 0
+            ), census
+            assert census["static_type_dynamic_attr_proofs"] == 0, census
+            assert census["static_type_dynamic_attr_misses"] == 0, census
             assert census["type_accessor_unique_owners"] == 0, census
             assert census["type_accessor_unique_types"] == 0, census
             assert census["code_accessor_unique_functions"] == 0, census
@@ -2121,6 +2134,124 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 torch.testing.assert_close(dynamic_compiled(x), torch.ones(2))
             census = guards._get_guard_fast_plan_capability_census()
             assert census["static_module_attr_binding_records"] == 0, census
+            assert census["instance_attr_binding_unsupported"] > 0, census
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        env["TORCHDYNAMO_GUARD_FAST_PLAN_CAPABILITY_CENSUS"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
+    def test_actual_partial_static_type_attr_binding_proof(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            guards = torch._C._dynamo.guards
+
+            class Namespace:
+                scale = torch.ones(2)
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.namespace = Namespace
+
+                def forward(self, x):
+                    return self.namespace.scale + x
+
+            guards._reset_guard_fast_plan_capability_census()
+            counter = CompileCounter()
+            compiled = torch.compile(Model(), backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            for _ in range(8):
+                torch.testing.assert_close(compiled(x), torch.ones(2))
+            assert counter.frame_count == 1, counter.frame_count
+            census = guards._get_guard_fast_plan_capability_census()
+            assert census["static_type_attr_binding_records"] > 0, census
+            assert census["static_type_attr_type_proofs"] > 0, census
+            assert census["static_type_attr_owner_misses"] == 0, census
+            assert census["static_type_attr_type_misses"] == 0, census
+
+            Namespace.scale = torch.full((2,), 3.0)
+            torch.testing.assert_close(compiled(x), torch.full((2,), 3.0))
+            assert counter.frame_count == 2, counter.frame_count
+            census = guards._get_guard_fast_plan_capability_census()
+            assert (
+                census["static_type_attr_owner_misses"]
+                + census["generic_dict_owner_misses"]
+                > 0
+            ), census
+
+            class Descriptor:
+                def __init__(self):
+                    self.value = torch.ones(2)
+
+                def __get__(self, obj, owner):
+                    return self.value
+
+            descriptor = Descriptor()
+
+            class DynamicNamespace:
+                scale = descriptor
+
+            class DynamicModel(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.namespace = DynamicNamespace
+
+                def forward(self, x):
+                    return self.namespace.scale + x
+
+            guards._reset_guard_fast_plan_capability_census()
+            dynamic_counter = CompileCounter()
+            dynamic_compiled = torch.compile(
+                DynamicModel(), backend=dynamic_counter, fullgraph=True
+            )
+            for _ in range(8):
+                torch.testing.assert_close(dynamic_compiled(x), torch.ones(2))
+            census = guards._get_guard_fast_plan_capability_census()
+            assert (
+                census["static_type_dynamic_attr_binding_records"] > 0
+            ), census
+            assert census["static_type_dynamic_attr_proofs"] > 0, census
+            assert census["static_type_dynamic_attr_misses"] == 0, census
+
+            descriptor.value = torch.full((2,), 4.0)
+            torch.testing.assert_close(
+                dynamic_compiled(x), torch.full((2,), 4.0)
+            )
+            assert dynamic_counter.frame_count == 2, dynamic_counter.frame_count
+            census = guards._get_guard_fast_plan_capability_census()
+            assert census["static_type_dynamic_attr_misses"] > 0, census
+
+            class CustomMeta(type):
+                pass
+
+            class CustomNamespace(metaclass=CustomMeta):
+                scale = torch.ones(2)
+
+            class CustomModel(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.namespace = CustomNamespace
+
+                def forward(self, x):
+                    return self.namespace.scale + x
+
+            guards._reset_guard_fast_plan_capability_census()
+            custom_counter = CompileCounter()
+            custom_compiled = torch.compile(
+                CustomModel(), backend=custom_counter, fullgraph=True
+            )
+            for _ in range(8):
+                torch.testing.assert_close(custom_compiled(x), torch.ones(2))
+            census = guards._get_guard_fast_plan_capability_census()
+            assert census["static_type_attr_binding_records"] == 0, census
             assert census["instance_attr_binding_unsupported"] > 0, census
         """
         env = os.environ.copy()

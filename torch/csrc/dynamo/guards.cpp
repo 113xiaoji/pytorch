@@ -286,6 +286,15 @@ struct GuardActualPartialCapabilityCensus {
   uint64_t static_module_dynamic_attr_binding_records{0};
   uint64_t static_module_dynamic_attr_proofs{0};
   uint64_t static_module_dynamic_attr_misses{0};
+  uint64_t static_type_attr_binding_records{0};
+  uint64_t static_type_attr_owner_proofs{0};
+  uint64_t static_type_attr_type_proofs{0};
+  uint64_t static_type_attr_owner_proofs_removed{0};
+  uint64_t static_type_attr_owner_misses{0};
+  uint64_t static_type_attr_type_misses{0};
+  uint64_t static_type_dynamic_attr_binding_records{0};
+  uint64_t static_type_dynamic_attr_proofs{0};
+  uint64_t static_type_dynamic_attr_misses{0};
   uint64_t type_accessor_coverage_failures{0};
   uint64_t code_accessor_proofs{0};
   uint64_t code_accessor_misses{0};
@@ -311,6 +320,8 @@ enum class GuardActualPartialAccessorRecordKind : uint8_t {
   TypeMethodBinding,
   StaticModuleAttrBinding,
   StaticModuleDynamicAttrBinding,
+  StaticTypeAttrBinding,
+  StaticTypeDynamicAttrBinding,
   UnsupportedInstanceAttrBinding,
   TypeAccessor,
   CodeAccessor,
@@ -506,17 +517,18 @@ struct GuardSubtreeInstanceAttrTypeProof {
   }
 };
 
-struct GuardSubtreeStaticModuleAttrOwnerProof {
+struct GuardSubtreeKnownStaticAttrOwnerProof {
   py::object owner;
   PyObject* owner_ptr{nullptr};
   py::object key;
   py::object expected;
   py::object dict;
+  PyTypeObject* owner_type{nullptr};
   bool owner_is_self{false};
 
   bool matches_current(PyObject* current_self) const {
     PyObject* current_owner = owner_is_self ? current_self : owner.ptr();
-    if (current_owner == nullptr || !PyModule_CheckExact(current_owner)) {
+    if (current_owner == nullptr || Py_TYPE(current_owner) != owner_type) {
       return false;
     }
     PyObject** dictptr = _PyObject_GetDictPtr(current_owner);
@@ -526,26 +538,26 @@ struct GuardSubtreeStaticModuleAttrOwnerProof {
   }
 };
 
-struct GuardSubtreeStaticModuleAttrTypeProof {
+struct GuardSubtreeKnownStaticAttrTypeProof {
   py::object type;
   getattrfunc getattr{nullptr};
   getattrofunc getattro{nullptr};
 
   bool matches_current() const {
     auto* current_type = reinterpret_cast<PyTypeObject*>(type.ptr());
-    return current_type == &PyModule_Type &&
-        current_type->tp_getattr == getattr &&
+    return current_type != nullptr && current_type->tp_getattr == getattr &&
         current_type->tp_getattro == getattro;
   }
 };
 
-struct GuardSubtreeStaticModuleDynamicAttrProof {
+struct GuardSubtreeKnownStaticDynamicAttrProof {
   py::object owner;
   py::object key;
   py::object expected;
+  PyTypeObject* owner_type{nullptr};
 
   bool matches_current() const {
-    if (!PyModule_CheckExact(owner.ptr())) {
+    if (owner.ptr() == nullptr || Py_TYPE(owner.ptr()) != owner_type) {
       return false;
     }
     PyObject* current = PyObject_GetAttr(owner.ptr(), key.ptr());
@@ -2214,7 +2226,7 @@ static void guard_last_success_fold_generic_dict_proofs(
     std::vector<GuardSubtreeTypeMethodOwnerProof>& type_method_owner_proofs,
     std::vector<GuardSubtreeInstanceAttrOwnerProof>&
         instance_attr_owner_proofs,
-    std::vector<GuardSubtreeStaticModuleAttrOwnerProof>&
+    std::vector<GuardSubtreeKnownStaticAttrOwnerProof>&
         static_module_attr_owner_proofs,
     std::vector<GuardSubtreeEntryToken>& hot_tokens) {
   if (generic_dict_proofs.empty()) {
@@ -2245,14 +2257,20 @@ static void guard_last_success_fold_generic_dict_proofs(
             return proven_owners.find(proof.owner_ptr) != proven_owners.end();
           }),
       instance_attr_owner_proofs.end());
-  const size_t old_static_module_attr_size =
-      static_module_attr_owner_proofs.size();
+  const size_t old_static_module_attr_size = std::count_if(
+      static_module_attr_owner_proofs.begin(),
+      static_module_attr_owner_proofs.end(),
+      [](const GuardSubtreeKnownStaticAttrOwnerProof& proof) {
+        return proof.owner_type == &PyModule_Type;
+      });
+  const size_t old_static_type_attr_size =
+      static_module_attr_owner_proofs.size() - old_static_module_attr_size;
   static_module_attr_owner_proofs.erase(
       std::remove_if(
           static_module_attr_owner_proofs.begin(),
           static_module_attr_owner_proofs.end(),
           [&proven_owners](
-              const GuardSubtreeStaticModuleAttrOwnerProof& proof) {
+              const GuardSubtreeKnownStaticAttrOwnerProof& proof) {
             return proven_owners.find(proof.owner_ptr) != proven_owners.end();
           }),
       static_module_attr_owner_proofs.end());
@@ -2269,11 +2287,22 @@ static void guard_last_success_fold_generic_dict_proofs(
 
   if (guard_fast_plan_capability_census_enabled()) {
     auto& census = guard_actual_partial_capability_census;
+    const size_t new_static_module_attr_size = std::count_if(
+        static_module_attr_owner_proofs.begin(),
+        static_module_attr_owner_proofs.end(),
+        [](const GuardSubtreeKnownStaticAttrOwnerProof& proof) {
+          return proof.owner_type == &PyModule_Type;
+        });
+    const size_t new_static_type_attr_size =
+        static_module_attr_owner_proofs.size() -
+        new_static_module_attr_size;
     census.generic_dict_accessor_owner_proofs_removed +=
         old_type_method_size - type_method_owner_proofs.size() +
         old_instance_attr_size - instance_attr_owner_proofs.size();
     census.static_module_attr_owner_proofs_removed +=
-        old_static_module_attr_size - static_module_attr_owner_proofs.size();
+        old_static_module_attr_size - new_static_module_attr_size;
+    census.static_type_attr_owner_proofs_removed +=
+        old_static_type_attr_size - new_static_type_attr_size;
     census.generic_dict_exact_dict_tokens_removed +=
         old_hot_token_size - hot_tokens.size();
   }
@@ -2463,48 +2492,72 @@ static bool guard_last_success_build_instance_attr_proofs(
   return true;
 }
 
-static bool guard_last_success_build_static_module_attr_proofs(
+static bool guard_last_success_build_known_static_attr_proofs(
     const std::vector<GuardActualPartialAccessorRecord>& records,
     PyObject* current_self,
-    std::vector<GuardSubtreeStaticModuleAttrOwnerProof>& owner_proofs,
-    std::vector<GuardSubtreeStaticModuleAttrTypeProof>& type_proofs,
-    std::vector<GuardSubtreeStaticModuleDynamicAttrProof>& dynamic_proofs) {
+    std::vector<GuardSubtreeKnownStaticAttrOwnerProof>& owner_proofs,
+    std::vector<GuardSubtreeKnownStaticAttrTypeProof>& type_proofs,
+    std::vector<GuardSubtreeKnownStaticDynamicAttrProof>& dynamic_proofs) {
   owner_proofs.clear();
   type_proofs.clear();
   dynamic_proofs.clear();
   for (const auto& record : records) {
-    const bool direct_binding = record.kind ==
+    const bool module_direct = record.kind ==
         GuardActualPartialAccessorRecordKind::StaticModuleAttrBinding;
-    const bool dynamic_binding = record.kind ==
+    const bool module_dynamic = record.kind ==
         GuardActualPartialAccessorRecordKind::StaticModuleDynamicAttrBinding;
+    const bool type_direct = record.kind ==
+        GuardActualPartialAccessorRecordKind::StaticTypeAttrBinding;
+    const bool type_dynamic = record.kind ==
+        GuardActualPartialAccessorRecordKind::StaticTypeDynamicAttrBinding;
+    const bool direct_binding = module_direct || type_direct;
+    const bool dynamic_binding = module_dynamic || type_dynamic;
     if (!direct_binding && !dynamic_binding) {
       continue;
     }
+    PyTypeObject* expected_owner_type =
+        (module_direct || module_dynamic) ? &PyModule_Type : &PyType_Type;
+    const bool valid_owner = record.owner_ptr != nullptr &&
+        (expected_owner_type == &PyModule_Type
+             ? PyModule_CheckExact(record.owner_ptr)
+             : PyType_Check(record.owner_ptr) &&
+                 Py_TYPE(record.owner_ptr) == &PyType_Type);
     if (record.owner_ptr == nullptr || record.key.ptr() == nullptr ||
-        record.resolved.ptr() == nullptr ||
-        !PyModule_CheckExact(record.owner_ptr) ||
-        record.owner_type != &PyModule_Type ||
-        PyModule_Type.tp_getattro == nullptr) {
+        record.resolved.ptr() == nullptr || !valid_owner ||
+        record.owner_type != expected_owner_type ||
+        expected_owner_type->tp_getattro == nullptr) {
       return false;
     }
-    PyObject* type_attr = _PyType_Lookup(&PyModule_Type, record.key.ptr());
+    PyObject* type_attr =
+        _PyType_Lookup(expected_owner_type, record.key.ptr());
     if (PyErr_Occurred()) {
       PyErr_Clear();
       return false;
     }
-    if (dynamic_binding) {
-      if (type_attr != nullptr || record.owner_dict.ptr() == nullptr ||
-          !record.exact_owner_dict ||
-          PyDict_GetItem(record.owner_dict.ptr(), record.key.ptr()) !=
-              nullptr) {
-        return false;
+    bool type_seen = false;
+    for (const auto& proof : type_proofs) {
+      if (proof.type.ptr() ==
+          reinterpret_cast<PyObject*>(expected_owner_type)) {
+        type_seen = true;
+        break;
       }
+    }
+    if (!type_seen) {
+      GuardSubtreeKnownStaticAttrTypeProof proof;
+      proof.type = py::reinterpret_borrow<py::object>(
+          reinterpret_cast<PyObject*>(expected_owner_type));
+      proof.getattr = expected_owner_type->tp_getattr;
+      proof.getattro = expected_owner_type->tp_getattro;
+      type_proofs.push_back(std::move(proof));
+    }
+    if (dynamic_binding) {
       bool dynamic_seen = false;
       for (const auto& proof : dynamic_proofs) {
         if (proof.owner.ptr() == record.owner_ptr &&
             proof.key.ptr() == record.key.ptr()) {
           dynamic_seen = true;
-          if (proof.expected.ptr() != record.resolved.ptr()) {
+          if (proof.expected.ptr() != record.resolved.ptr() ||
+              proof.owner_type != expected_owner_type) {
             return false;
           }
           break;
@@ -2513,17 +2566,20 @@ static bool guard_last_success_build_static_module_attr_proofs(
       if (dynamic_seen) {
         continue;
       }
-      GuardSubtreeStaticModuleDynamicAttrProof proof;
+      GuardSubtreeKnownStaticDynamicAttrProof proof;
       proof.owner = record.owner;
       proof.key = record.key;
       proof.expected = record.resolved;
+      proof.owner_type = expected_owner_type;
       dynamic_proofs.push_back(std::move(proof));
       continue;
     }
     if (record.owner_dict.ptr() == nullptr || !record.exact_owner_dict ||
         PyDict_GetItem(record.owner_dict.ptr(), record.key.ptr()) !=
             record.resolved.ptr() ||
-        (type_attr != nullptr && PyDescr_IsData(type_attr))) {
+        (type_attr != nullptr && PyDescr_IsData(type_attr)) ||
+        (expected_owner_type == &PyType_Type &&
+         Py_TYPE(record.resolved.ptr())->tp_descr_get != nullptr)) {
       return false;
     }
 
@@ -2533,19 +2589,21 @@ static bool guard_last_success_build_static_module_attr_proofs(
           proof.key.ptr() == record.key.ptr()) {
         owner_seen = true;
         if (proof.dict.ptr() != record.owner_dict.ptr() ||
-            proof.expected.ptr() != record.resolved.ptr()) {
+            proof.expected.ptr() != record.resolved.ptr() ||
+            proof.owner_type != expected_owner_type) {
           return false;
         }
         break;
       }
     }
     if (!owner_seen) {
-      GuardSubtreeStaticModuleAttrOwnerProof proof;
+      GuardSubtreeKnownStaticAttrOwnerProof proof;
       proof.owner = record.owner;
       proof.owner_ptr = record.owner_ptr;
       proof.key = record.key;
       proof.expected = record.resolved;
       proof.dict = record.owner_dict;
+      proof.owner_type = expected_owner_type;
       if (record.owner_ptr == current_self) {
         proof.owner = py::object();
         proof.owner_is_self = true;
@@ -2553,19 +2611,29 @@ static bool guard_last_success_build_static_module_attr_proofs(
       owner_proofs.push_back(std::move(proof));
     }
   }
-  if (!owner_proofs.empty() || !dynamic_proofs.empty()) {
-    GuardSubtreeStaticModuleAttrTypeProof proof;
-    proof.type = py::reinterpret_borrow<py::object>(
-        reinterpret_cast<PyObject*>(&PyModule_Type));
-    proof.getattr = PyModule_Type.tp_getattr;
-    proof.getattro = PyModule_Type.tp_getattro;
-    type_proofs.push_back(std::move(proof));
-  }
   if (guard_fast_plan_capability_census_enabled()) {
     auto& census = guard_actual_partial_capability_census;
-    census.static_module_attr_owner_proofs += owner_proofs.size();
-    census.static_module_attr_type_proofs += type_proofs.size();
-    census.static_module_dynamic_attr_proofs += dynamic_proofs.size();
+    for (const auto& proof : owner_proofs) {
+      if (proof.owner_type == &PyModule_Type) {
+        ++census.static_module_attr_owner_proofs;
+      } else {
+        ++census.static_type_attr_owner_proofs;
+      }
+    }
+    for (const auto& proof : type_proofs) {
+      if (proof.type.ptr() == reinterpret_cast<PyObject*>(&PyModule_Type)) {
+        ++census.static_module_attr_type_proofs;
+      } else {
+        ++census.static_type_attr_type_proofs;
+      }
+    }
+    for (const auto& proof : dynamic_proofs) {
+      if (proof.owner_type == &PyModule_Type) {
+        ++census.static_module_dynamic_attr_proofs;
+      } else {
+        ++census.static_type_dynamic_attr_proofs;
+      }
+    }
   }
   return true;
 }
@@ -2577,7 +2645,7 @@ static bool guard_last_success_type_accessors_are_covered(
     const std::vector<GuardSubtreeTypeMethodOwnerProof>& type_method_proofs,
     const std::vector<GuardSubtreeInstanceAttrOwnerProof>&
         instance_attr_proofs,
-    const std::vector<GuardSubtreeStaticModuleAttrOwnerProof>&
+    const std::vector<GuardSubtreeKnownStaticAttrOwnerProof>&
         static_module_attr_proofs) {
   std::unordered_set<PyObject*> covered_owners;
   covered_owners.reserve(
@@ -2811,11 +2879,11 @@ struct GuardLastSuccessPartialPlan {
           new_instance_attr_owner_proofs,
       std::vector<GuardSubtreeInstanceAttrTypeProof>&&
           new_instance_attr_type_proofs,
-      std::vector<GuardSubtreeStaticModuleAttrOwnerProof>&&
+      std::vector<GuardSubtreeKnownStaticAttrOwnerProof>&&
           new_static_module_attr_owner_proofs,
-      std::vector<GuardSubtreeStaticModuleAttrTypeProof>&&
+      std::vector<GuardSubtreeKnownStaticAttrTypeProof>&&
           new_static_module_attr_type_proofs,
-      std::vector<GuardSubtreeStaticModuleDynamicAttrProof>&&
+      std::vector<GuardSubtreeKnownStaticDynamicAttrProof>&&
           new_static_module_dynamic_attr_proofs,
       std::vector<GuardSubtreeCodeAccessorProof>&&
           new_code_accessor_proofs,
@@ -2877,11 +2945,11 @@ struct GuardLastSuccessPartialPlan {
   std::vector<GuardSubtreeTypeMethodTypeProof> type_method_type_proofs;
   std::vector<GuardSubtreeInstanceAttrOwnerProof> instance_attr_owner_proofs;
   std::vector<GuardSubtreeInstanceAttrTypeProof> instance_attr_type_proofs;
-  std::vector<GuardSubtreeStaticModuleAttrOwnerProof>
+  std::vector<GuardSubtreeKnownStaticAttrOwnerProof>
       static_module_attr_owner_proofs;
-  std::vector<GuardSubtreeStaticModuleAttrTypeProof>
+  std::vector<GuardSubtreeKnownStaticAttrTypeProof>
       static_module_attr_type_proofs;
-  std::vector<GuardSubtreeStaticModuleDynamicAttrProof>
+  std::vector<GuardSubtreeKnownStaticDynamicAttrProof>
       static_module_dynamic_attr_proofs;
   std::vector<GuardSubtreeCodeAccessorProof> code_accessor_proofs;
   std::vector<GuardCrossSliceRelationPlan> cross_slice_relations;
@@ -3135,11 +3203,11 @@ struct GuardLastSuccessPartialPlanBuild {
   std::vector<GuardSubtreeTypeMethodTypeProof> type_method_type_proofs;
   std::vector<GuardSubtreeInstanceAttrOwnerProof> instance_attr_owner_proofs;
   std::vector<GuardSubtreeInstanceAttrTypeProof> instance_attr_type_proofs;
-  std::vector<GuardSubtreeStaticModuleAttrOwnerProof>
+  std::vector<GuardSubtreeKnownStaticAttrOwnerProof>
       static_module_attr_owner_proofs;
-  std::vector<GuardSubtreeStaticModuleAttrTypeProof>
+  std::vector<GuardSubtreeKnownStaticAttrTypeProof>
       static_module_attr_type_proofs;
-  std::vector<GuardSubtreeStaticModuleDynamicAttrProof>
+  std::vector<GuardSubtreeKnownStaticDynamicAttrProof>
       static_module_dynamic_attr_proofs;
   std::vector<GuardSubtreeCodeAccessorProof> code_accessor_proofs;
   std::vector<GuardCrossSliceRelationPlan> cross_slice_relations;
@@ -3204,7 +3272,7 @@ static bool guard_last_success_prepare_actual_partial(
           build.instance_attr_type_proofs)) {
     return false;
   }
-  if (!guard_last_success_build_static_module_attr_proofs(
+  if (!guard_last_success_build_known_static_attr_proofs(
           accessor_records,
           current_self,
           build.static_module_attr_owner_proofs,
@@ -3322,8 +3390,14 @@ static bool guard_last_success_actual_partial_tokens_match(
   for (const auto& proof : plan.static_module_attr_type_proofs) {
     if (!proof.matches_current()) {
       if (guard_fast_plan_capability_census_enabled()) {
-        ++guard_actual_partial_capability_census
-              .static_module_attr_type_misses;
+        if (proof.type.ptr() ==
+            reinterpret_cast<PyObject*>(&PyModule_Type)) {
+          ++guard_actual_partial_capability_census
+                .static_module_attr_type_misses;
+        } else {
+          ++guard_actual_partial_capability_census
+                .static_type_attr_type_misses;
+        }
       }
       return false;
     }
@@ -3331,8 +3405,13 @@ static bool guard_last_success_actual_partial_tokens_match(
   for (const auto& proof : plan.static_module_attr_owner_proofs) {
     if (!proof.matches_current(current_self)) {
       if (guard_fast_plan_capability_census_enabled()) {
-        ++guard_actual_partial_capability_census
-              .static_module_attr_owner_misses;
+        if (proof.owner_type == &PyModule_Type) {
+          ++guard_actual_partial_capability_census
+                .static_module_attr_owner_misses;
+        } else {
+          ++guard_actual_partial_capability_census
+                .static_type_attr_owner_misses;
+        }
       }
       return false;
     }
@@ -3340,8 +3419,13 @@ static bool guard_last_success_actual_partial_tokens_match(
   for (const auto& proof : plan.static_module_dynamic_attr_proofs) {
     if (!proof.matches_current()) {
       if (guard_fast_plan_capability_census_enabled()) {
-        ++guard_actual_partial_capability_census
-              .static_module_dynamic_attr_misses;
+        if (proof.owner_type == &PyModule_Type) {
+          ++guard_actual_partial_capability_census
+                .static_module_dynamic_attr_misses;
+        } else {
+          ++guard_actual_partial_capability_census
+                .static_type_dynamic_attr_misses;
+        }
       }
       return false;
     }
@@ -3633,13 +3717,24 @@ static void guard_actual_partial_record_instance_attr_binding(
       !default_getattribute && PyModule_CheckExact(owner) &&
       record.owner_type == &PyModule_Type &&
       record.owner_type->tp_getattro == PyModule_Type.tp_getattro &&
-      PyUnicode_Check(key) && exact_owner_dict;
+      PyUnicode_Check(key);
   const bool static_module_attr_binding = static_module_binding_base &&
+      exact_owner_dict &&
       PyDict_GetItem(*dictptr, key) == expected &&
       (type_attr == nullptr || !PyDescr_IsData(type_attr));
   const bool static_module_dynamic_attr_binding =
-      static_module_binding_base && type_attr == nullptr &&
-      PyDict_GetItem(*dictptr, key) == nullptr;
+      static_module_binding_base && !static_module_attr_binding;
+  const bool static_type_binding_base = require_default_getattribute &&
+      !default_getattribute && PyType_Check(owner) &&
+      Py_TYPE(owner) == &PyType_Type &&
+      record.owner_type->tp_getattro == PyType_Type.tp_getattro &&
+      PyUnicode_Check(key);
+  const bool static_type_attr_binding = static_type_binding_base &&
+      exact_owner_dict && PyDict_GetItem(*dictptr, key) == expected &&
+      (type_attr == nullptr || !PyDescr_IsData(type_attr)) &&
+      Py_TYPE(expected)->tp_descr_get == nullptr;
+  const bool static_type_dynamic_attr_binding =
+      static_type_binding_base && !static_type_attr_binding;
   bool type_version_ready = false;
   if (direct_instance_binding || type_method_binding) {
     type_version_ready =
@@ -3660,6 +3755,12 @@ static void guard_actual_partial_record_instance_attr_binding(
   } else if (static_module_dynamic_attr_binding) {
     record.kind = GuardActualPartialAccessorRecordKind::
         StaticModuleDynamicAttrBinding;
+  } else if (static_type_attr_binding) {
+    record.kind =
+        GuardActualPartialAccessorRecordKind::StaticTypeAttrBinding;
+  } else if (static_type_dynamic_attr_binding) {
+    record.kind =
+        GuardActualPartialAccessorRecordKind::StaticTypeDynamicAttrBinding;
   } else {
     record.kind =
         GuardActualPartialAccessorRecordKind::UnsupportedInstanceAttrBinding;
@@ -3701,6 +3802,47 @@ static void guard_actual_partial_record_instance_attr_binding(
       ++census.instance_attr_non_default_static_type;
       ++census.instance_attr_non_default_exact_module;
       ++census.instance_attr_non_default_type_attr_absent;
+      guard_actual_partial_non_default_getattribute_types.insert(
+          record.owner_type);
+      const getattrofunc slot = record.owner_type->tp_getattro;
+      if (std::find(
+              guard_actual_partial_non_default_getattribute_slots.begin(),
+              guard_actual_partial_non_default_getattribute_slots.end(),
+              slot) ==
+          guard_actual_partial_non_default_getattribute_slots.end()) {
+        guard_actual_partial_non_default_getattribute_slots.push_back(slot);
+      }
+    } else if (static_type_attr_binding) {
+      ++census.static_type_attr_binding_records;
+      ++census.instance_attr_non_default_getattribute;
+      ++census.instance_attr_non_default_static_type;
+      ++census.instance_attr_non_default_exact_type_object;
+      ++census.instance_attr_non_default_exact_dict_value;
+      if (type_attr == nullptr) {
+        ++census.instance_attr_non_default_type_attr_absent;
+      }
+      guard_actual_partial_non_default_getattribute_types.insert(
+          record.owner_type);
+      const getattrofunc slot = record.owner_type->tp_getattro;
+      if (std::find(
+              guard_actual_partial_non_default_getattribute_slots.begin(),
+              guard_actual_partial_non_default_getattribute_slots.end(),
+              slot) ==
+          guard_actual_partial_non_default_getattribute_slots.end()) {
+        guard_actual_partial_non_default_getattribute_slots.push_back(slot);
+      }
+    } else if (static_type_dynamic_attr_binding) {
+      ++census.static_type_dynamic_attr_binding_records;
+      ++census.instance_attr_non_default_getattribute;
+      ++census.instance_attr_non_default_static_type;
+      ++census.instance_attr_non_default_exact_type_object;
+      if (exact_owner_dict &&
+          PyDict_GetItem(*dictptr, key) == expected) {
+        ++census.instance_attr_non_default_exact_dict_value;
+      }
+      if (type_attr == nullptr) {
+        ++census.instance_attr_non_default_type_attr_absent;
+      }
       guard_actual_partial_non_default_getattribute_types.insert(
           record.owner_type);
       const getattrofunc slot = record.owner_type->tp_getattro;
@@ -3773,6 +3915,10 @@ static void guard_actual_partial_finalize_accessor_records(
                            StaticModuleAttrBinding ||
         record.kind == GuardActualPartialAccessorRecordKind::
                            StaticModuleDynamicAttrBinding ||
+        record.kind ==
+            GuardActualPartialAccessorRecordKind::StaticTypeAttrBinding ||
+        record.kind == GuardActualPartialAccessorRecordKind::
+                           StaticTypeDynamicAttrBinding ||
         record.kind == GuardActualPartialAccessorRecordKind::
                            UnsupportedInstanceAttrBinding;
     if (is_owner_path_record && record.owner_ptr != nullptr) {
@@ -3790,6 +3936,10 @@ static void guard_actual_partial_finalize_accessor_records(
                            StaticModuleAttrBinding ||
         record.kind == GuardActualPartialAccessorRecordKind::
                            StaticModuleDynamicAttrBinding ||
+        record.kind ==
+            GuardActualPartialAccessorRecordKind::StaticTypeAttrBinding ||
+        record.kind == GuardActualPartialAccessorRecordKind::
+                           StaticTypeDynamicAttrBinding ||
         record.kind == GuardActualPartialAccessorRecordKind::
                            UnsupportedInstanceAttrBinding) {
       unique_instance_attr_owners.insert(record.owner_ptr);
@@ -3830,6 +3980,13 @@ static void guard_actual_partial_finalize_accessor_records(
     } else if (
         record.kind == GuardActualPartialAccessorRecordKind::
                            StaticModuleDynamicAttrBinding) {
+      guard_actual_partial_type_accessor_any_proof_covered.insert(
+          record.owner_ptr);
+    } else if (
+        record.kind ==
+            GuardActualPartialAccessorRecordKind::StaticTypeAttrBinding ||
+        record.kind == GuardActualPartialAccessorRecordKind::
+                           StaticTypeDynamicAttrBinding) {
       guard_actual_partial_type_accessor_any_proof_covered.insert(
           record.owner_ptr);
     }
@@ -4033,6 +4190,24 @@ static py::dict guard_actual_partial_get_capability_census() {
       census.static_module_dynamic_attr_proofs;
   result["static_module_dynamic_attr_misses"] =
       census.static_module_dynamic_attr_misses;
+  result["static_type_attr_binding_records"] =
+      census.static_type_attr_binding_records;
+  result["static_type_attr_owner_proofs"] =
+      census.static_type_attr_owner_proofs;
+  result["static_type_attr_type_proofs"] =
+      census.static_type_attr_type_proofs;
+  result["static_type_attr_owner_proofs_removed"] =
+      census.static_type_attr_owner_proofs_removed;
+  result["static_type_attr_owner_misses"] =
+      census.static_type_attr_owner_misses;
+  result["static_type_attr_type_misses"] =
+      census.static_type_attr_type_misses;
+  result["static_type_dynamic_attr_binding_records"] =
+      census.static_type_dynamic_attr_binding_records;
+  result["static_type_dynamic_attr_proofs"] =
+      census.static_type_dynamic_attr_proofs;
+  result["static_type_dynamic_attr_misses"] =
+      census.static_type_dynamic_attr_misses;
   result["type_accessor_coverage_failures"] =
       census.type_accessor_coverage_failures;
   result["code_accessor_proofs"] = census.code_accessor_proofs;
