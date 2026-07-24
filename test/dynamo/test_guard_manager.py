@@ -1879,6 +1879,21 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             assert census["type_method_binding_records"] == 0, census
             assert census["instance_attr_binding_unsupported"] == 0, census
             assert census["instance_attr_non_default_getattribute"] == 0, census
+            assert census["instance_attr_non_default_heap_type"] == 0, census
+            assert census["instance_attr_non_default_static_type"] == 0, census
+            assert census["instance_attr_non_default_exact_tensor"] == 0, census
+            assert (
+                census["instance_attr_non_default_exact_dict_value"] == 0
+            ), census
+            assert (
+                census["instance_attr_non_default_type_attr_absent"] == 0
+            ), census
+            assert (
+                census["instance_attr_non_default_unique_types"] == 0
+            ), census
+            assert (
+                census["instance_attr_non_default_unique_slots"] == 0
+            ), census
             assert census["instance_attr_unique_owners"] == 0, census
             assert census["instance_attr_unique_types"] == 0, census
             assert census["type_method_owner_proofs"] == 0, census
@@ -1942,6 +1957,24 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             assert custom_counter.frame_count == 1, custom_counter.frame_count
             census = guards._get_guard_fast_plan_capability_census()
             assert census["instance_attr_non_default_getattribute"] > 0, census
+            assert (
+                census["instance_attr_non_default_heap_type"]
+                + census["instance_attr_non_default_static_type"]
+                == census["instance_attr_non_default_getattribute"]
+            ), census
+            assert census["instance_attr_non_default_heap_type"] > 0, census
+            assert (
+                census["instance_attr_non_default_exact_dict_value"] > 0
+            ), census
+            assert (
+                census["instance_attr_non_default_type_attr_absent"] > 0
+            ), census
+            assert (
+                census["instance_attr_non_default_unique_types"] > 0
+            ), census
+            assert (
+                census["instance_attr_non_default_unique_slots"] > 0
+            ), census
             assert (
                 census["instance_attr_binding_unsupported"]
                 >= census["instance_attr_non_default_getattribute"]

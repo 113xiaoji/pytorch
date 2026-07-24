@@ -258,6 +258,11 @@ struct GuardActualPartialCapabilityCensus {
   uint64_t type_method_binding_records{0};
   uint64_t instance_attr_binding_unsupported{0};
   uint64_t instance_attr_non_default_getattribute{0};
+  uint64_t instance_attr_non_default_heap_type{0};
+  uint64_t instance_attr_non_default_static_type{0};
+  uint64_t instance_attr_non_default_exact_tensor{0};
+  uint64_t instance_attr_non_default_exact_dict_value{0};
+  uint64_t instance_attr_non_default_type_attr_absent{0};
   uint64_t instance_attr_unique_owners{0};
   uint64_t instance_attr_unique_types{0};
   uint64_t type_method_owner_proofs{0};
@@ -506,6 +511,10 @@ thread_local std::unordered_set<PyObject*>
     guard_actual_partial_type_accessor_type_method_covered;
 thread_local std::unordered_set<PyObject*>
     guard_actual_partial_type_accessor_any_proof_covered;
+thread_local std::unordered_set<PyTypeObject*>
+    guard_actual_partial_non_default_getattribute_types;
+thread_local std::vector<getattrofunc>
+    guard_actual_partial_non_default_getattribute_slots;
 
 static bool guard_fast_plan_enabled() {
   static const bool env_enabled =
@@ -3394,6 +3403,32 @@ static void guard_actual_partial_record_instance_attr_binding(
       ++census.instance_attr_binding_unsupported;
       if (!default_getattribute) {
         ++census.instance_attr_non_default_getattribute;
+        PyTypeObject* owner_type = Py_TYPE(owner);
+        if (PyType_HasFeature(owner_type, Py_TPFLAGS_HEAPTYPE)) {
+          ++census.instance_attr_non_default_heap_type;
+        } else {
+          ++census.instance_attr_non_default_static_type;
+        }
+        if (THPVariable_CheckExact(owner)) {
+          ++census.instance_attr_non_default_exact_tensor;
+        }
+        if (exact_owner_dict && PyUnicode_Check(key) &&
+            PyDict_GetItem(*dictptr, key) == expected) {
+          ++census.instance_attr_non_default_exact_dict_value;
+        }
+        if (type_attr == nullptr) {
+          ++census.instance_attr_non_default_type_attr_absent;
+        }
+        guard_actual_partial_non_default_getattribute_types.insert(
+            owner_type);
+        const getattrofunc slot = owner_type->tp_getattro;
+        if (std::find(
+                guard_actual_partial_non_default_getattribute_slots.begin(),
+                guard_actual_partial_non_default_getattribute_slots.end(),
+                slot) ==
+            guard_actual_partial_non_default_getattribute_slots.end()) {
+          guard_actual_partial_non_default_getattribute_slots.push_back(slot);
+        }
       }
     }
   }
@@ -3480,6 +3515,8 @@ static void guard_actual_partial_reset_capability_census() {
   guard_actual_partial_type_accessor_instance_attr_covered.clear();
   guard_actual_partial_type_accessor_type_method_covered.clear();
   guard_actual_partial_type_accessor_any_proof_covered.clear();
+  guard_actual_partial_non_default_getattribute_types.clear();
+  guard_actual_partial_non_default_getattribute_slots.clear();
 }
 
 static const char* guard_actual_partial_leaf_capability_reason_name(
@@ -3610,6 +3647,20 @@ static py::dict guard_actual_partial_get_capability_census() {
       census.instance_attr_binding_unsupported;
   result["instance_attr_non_default_getattribute"] =
       census.instance_attr_non_default_getattribute;
+  result["instance_attr_non_default_heap_type"] =
+      census.instance_attr_non_default_heap_type;
+  result["instance_attr_non_default_static_type"] =
+      census.instance_attr_non_default_static_type;
+  result["instance_attr_non_default_exact_tensor"] =
+      census.instance_attr_non_default_exact_tensor;
+  result["instance_attr_non_default_exact_dict_value"] =
+      census.instance_attr_non_default_exact_dict_value;
+  result["instance_attr_non_default_type_attr_absent"] =
+      census.instance_attr_non_default_type_attr_absent;
+  result["instance_attr_non_default_unique_types"] =
+      guard_actual_partial_non_default_getattribute_types.size();
+  result["instance_attr_non_default_unique_slots"] =
+      guard_actual_partial_non_default_getattribute_slots.size();
   result["instance_attr_unique_owners"] = census.instance_attr_unique_owners;
   result["instance_attr_unique_types"] = census.instance_attr_unique_types;
   result["type_method_owner_proofs"] = census.type_method_owner_proofs;
