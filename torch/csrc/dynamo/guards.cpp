@@ -440,6 +440,14 @@ thread_local std::unordered_set<PyObject*>
     guard_actual_partial_code_accessor_functions;
 thread_local std::unordered_set<PyObject*>
     guard_actual_partial_code_accessor_codes;
+thread_local std::unordered_set<PyObject*>
+    guard_actual_partial_type_accessor_generic_dict_covered;
+thread_local std::unordered_set<PyObject*>
+    guard_actual_partial_type_accessor_instance_attr_covered;
+thread_local std::unordered_set<PyObject*>
+    guard_actual_partial_type_accessor_type_method_covered;
+thread_local std::unordered_set<PyObject*>
+    guard_actual_partial_type_accessor_any_proof_covered;
 
 static bool guard_fast_plan_enabled() {
   static const bool env_enabled =
@@ -3210,6 +3218,32 @@ static void guard_actual_partial_finalize_accessor_records(
         unique_instance_attr_types.insert(record.owner_type);
       }
     }
+    if (record.owner_ptr == nullptr ||
+        guard_actual_partial_type_accessor_owners.find(record.owner_ptr) ==
+            guard_actual_partial_type_accessor_owners.end()) {
+      continue;
+    }
+    if (record.kind ==
+        GuardActualPartialAccessorRecordKind::GenericDictBinding) {
+      guard_actual_partial_type_accessor_generic_dict_covered.insert(
+          record.owner_ptr);
+      guard_actual_partial_type_accessor_any_proof_covered.insert(
+          record.owner_ptr);
+    } else if (
+        record.kind ==
+        GuardActualPartialAccessorRecordKind::InstanceAttrBinding) {
+      guard_actual_partial_type_accessor_instance_attr_covered.insert(
+          record.owner_ptr);
+      guard_actual_partial_type_accessor_any_proof_covered.insert(
+          record.owner_ptr);
+    } else if (
+        record.kind ==
+        GuardActualPartialAccessorRecordKind::TypeMethodBinding) {
+      guard_actual_partial_type_accessor_type_method_covered.insert(
+          record.owner_ptr);
+      guard_actual_partial_type_accessor_any_proof_covered.insert(
+          record.owner_ptr);
+    }
   }
   auto& census = guard_actual_partial_capability_census;
   census.owner_path_unique_records += unique_owners.size();
@@ -3224,6 +3258,10 @@ static void guard_actual_partial_reset_capability_census() {
   guard_actual_partial_type_accessor_types.clear();
   guard_actual_partial_code_accessor_functions.clear();
   guard_actual_partial_code_accessor_codes.clear();
+  guard_actual_partial_type_accessor_generic_dict_covered.clear();
+  guard_actual_partial_type_accessor_instance_attr_covered.clear();
+  guard_actual_partial_type_accessor_type_method_covered.clear();
+  guard_actual_partial_type_accessor_any_proof_covered.clear();
 }
 
 static py::dict guard_actual_partial_get_capability_census() {
@@ -3280,6 +3318,17 @@ static py::dict guard_actual_partial_get_capability_census() {
       census.code_accessor_unique_functions;
   result["code_accessor_unique_codes"] =
       census.code_accessor_unique_codes;
+  result["type_accessor_generic_dict_covered_owners"] =
+      guard_actual_partial_type_accessor_generic_dict_covered.size();
+  result["type_accessor_instance_attr_covered_owners"] =
+      guard_actual_partial_type_accessor_instance_attr_covered.size();
+  result["type_accessor_type_method_covered_owners"] =
+      guard_actual_partial_type_accessor_type_method_covered.size();
+  result["type_accessor_any_proof_covered_owners"] =
+      guard_actual_partial_type_accessor_any_proof_covered.size();
+  result["type_accessor_uncovered_owners"] =
+      census.type_accessor_unique_owners -
+      guard_actual_partial_type_accessor_any_proof_covered.size();
   result["owner_path_records"] = census.owner_path_records;
   result["owner_path_unique_records"] = census.owner_path_unique_records;
   result["generic_dict_binding_records"] =
