@@ -248,6 +248,9 @@ struct GuardActualPartialCapabilityCensus {
   uint64_t instance_attr_owner_misses{0};
   uint64_t instance_attr_type_misses{0};
   uint64_t instance_attr_type_refreshes{0};
+  uint64_t type_accessor_coverage_failures{0};
+  uint64_t code_accessor_proofs{0};
+  uint64_t code_accessor_misses{0};
 };
 
 enum class GuardActualPartialAccessorRecordKind : uint8_t {
@@ -255,6 +258,8 @@ enum class GuardActualPartialAccessorRecordKind : uint8_t {
   InstanceAttrBinding,
   TypeMethodBinding,
   UnsupportedInstanceAttrBinding,
+  TypeAccessor,
+  CodeAccessor,
 };
 
 struct GuardActualPartialAccessorRecord {
@@ -291,6 +296,23 @@ struct GuardSubtreeGenericDictOwnerProof {
         PyDict_CheckExact(*dictptr) &&
         get_dict_version_unchecked(*dictptr) == dict_version &&
         PyDict_GET_SIZE(*dictptr) == dict_size;
+  }
+};
+
+struct GuardSubtreeCodeAccessorProof {
+  py::object function;
+  py::object code;
+
+  bool matches_current() const {
+    if (!PyFunction_Check(function.ptr())) {
+      return false;
+    }
+    PyObject* current_code = PyFunction_GetCode(function.ptr());
+    if (current_code == nullptr) {
+      PyErr_Clear();
+      return false;
+    }
+    return current_code == code.ptr();
   }
 };
 
@@ -2298,6 +2320,80 @@ static bool guard_last_success_build_instance_attr_proofs(
   return true;
 }
 
+static bool guard_last_success_type_accessors_are_covered(
+    const std::vector<GuardActualPartialAccessorRecord>& records,
+    PyObject* current_self,
+    const std::vector<GuardSubtreeGenericDictOwnerProof>& generic_dict_proofs,
+    const std::vector<GuardSubtreeTypeMethodOwnerProof>& type_method_proofs,
+    const std::vector<GuardSubtreeInstanceAttrOwnerProof>&
+        instance_attr_proofs) {
+  std::unordered_set<PyObject*> covered_owners;
+  covered_owners.reserve(
+      generic_dict_proofs.size() + type_method_proofs.size() +
+      instance_attr_proofs.size() + 1);
+  covered_owners.insert(current_self);
+  for (const auto& proof : generic_dict_proofs) {
+    covered_owners.insert(proof.owner_ptr);
+  }
+  for (const auto& proof : type_method_proofs) {
+    covered_owners.insert(proof.owner_ptr);
+  }
+  for (const auto& proof : instance_attr_proofs) {
+    covered_owners.insert(proof.owner_ptr);
+  }
+  for (const auto& record : records) {
+    if (record.kind != GuardActualPartialAccessorRecordKind::TypeAccessor) {
+      continue;
+    }
+    if (record.owner_ptr == nullptr || record.owner_type == nullptr ||
+        Py_TYPE(record.owner_ptr) != record.owner_type ||
+        covered_owners.find(record.owner_ptr) == covered_owners.end()) {
+      if (guard_fast_plan_capability_census_enabled()) {
+        ++guard_actual_partial_capability_census
+              .type_accessor_coverage_failures;
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool guard_last_success_build_code_accessor_proofs(
+    const std::vector<GuardActualPartialAccessorRecord>& records,
+    std::vector<GuardSubtreeCodeAccessorProof>& proofs) {
+  proofs.clear();
+  std::unordered_map<PyObject*, size_t> proof_index_by_function;
+  proof_index_by_function.reserve(records.size());
+  for (const auto& record : records) {
+    if (record.kind != GuardActualPartialAccessorRecordKind::CodeAccessor) {
+      continue;
+    }
+    if (record.owner_ptr == nullptr || record.resolved.ptr() == nullptr ||
+        !PyFunction_Check(record.owner_ptr) ||
+        PyFunction_GetCode(record.owner_ptr) != record.resolved.ptr()) {
+      PyErr_Clear();
+      return false;
+    }
+    const auto existing = proof_index_by_function.find(record.owner_ptr);
+    if (existing != proof_index_by_function.end()) {
+      if (proofs[existing->second].code.ptr() != record.resolved.ptr()) {
+        return false;
+      }
+      continue;
+    }
+    GuardSubtreeCodeAccessorProof proof;
+    proof.function = record.owner;
+    proof.code = record.resolved;
+    proof_index_by_function.emplace(record.owner_ptr, proofs.size());
+    proofs.push_back(std::move(proof));
+  }
+  if (guard_fast_plan_capability_census_enabled()) {
+    guard_actual_partial_capability_census.code_accessor_proofs +=
+        proofs.size();
+  }
+  return true;
+}
+
 static void guard_last_success_retain_token_objects(
     const std::vector<GuardSubtreeEntryToken>& partial_tokens,
     std::vector<py::object>& retained_token_objects) {
@@ -2419,6 +2515,7 @@ struct GuardLastSuccessPartialPlan {
     type_method_type_proofs.clear();
     instance_attr_owner_proofs.clear();
     instance_attr_type_proofs.clear();
+    code_accessor_proofs.clear();
     cross_slice_relations.clear();
     retained_token_objects.clear();
   }
@@ -2453,6 +2550,8 @@ struct GuardLastSuccessPartialPlan {
           new_instance_attr_owner_proofs,
       std::vector<GuardSubtreeInstanceAttrTypeProof>&&
           new_instance_attr_type_proofs,
+      std::vector<GuardSubtreeCodeAccessorProof>&&
+          new_code_accessor_proofs,
       std::vector<GuardCrossSliceRelationPlan>&& new_cross_slice_relations,
       std::vector<py::object>&& new_retained_token_objects) {
     const bool stable = entry_key == new_entry_key &&
@@ -2478,6 +2577,7 @@ struct GuardLastSuccessPartialPlan {
     instance_attr_owner_proofs =
         std::move(new_instance_attr_owner_proofs);
     instance_attr_type_proofs = std::move(new_instance_attr_type_proofs);
+    code_accessor_proofs = std::move(new_code_accessor_proofs);
     cross_slice_relations = std::move(new_cross_slice_relations);
     retained_token_objects = std::move(new_retained_token_objects);
     if (state != GuardLastSuccessPartialPlanState::Enabled &&
@@ -2504,6 +2604,7 @@ struct GuardLastSuccessPartialPlan {
   std::vector<GuardSubtreeTypeMethodTypeProof> type_method_type_proofs;
   std::vector<GuardSubtreeInstanceAttrOwnerProof> instance_attr_owner_proofs;
   std::vector<GuardSubtreeInstanceAttrTypeProof> instance_attr_type_proofs;
+  std::vector<GuardSubtreeCodeAccessorProof> code_accessor_proofs;
   std::vector<GuardCrossSliceRelationPlan> cross_slice_relations;
   std::vector<py::object> retained_token_objects;
 };
@@ -2728,6 +2829,7 @@ struct GuardLastSuccessPartialPlanBuild {
   std::vector<GuardSubtreeTypeMethodTypeProof> type_method_type_proofs;
   std::vector<GuardSubtreeInstanceAttrOwnerProof> instance_attr_owner_proofs;
   std::vector<GuardSubtreeInstanceAttrTypeProof> instance_attr_type_proofs;
+  std::vector<GuardSubtreeCodeAccessorProof> code_accessor_proofs;
   std::vector<GuardCrossSliceRelationPlan> cross_slice_relations;
   std::vector<py::object> retained_token_objects;
 };
@@ -2788,6 +2890,16 @@ static bool guard_last_success_prepare_actual_partial(
           current_self,
           build.instance_attr_owner_proofs,
           build.instance_attr_type_proofs)) {
+    return false;
+  }
+  if (!guard_last_success_type_accessors_are_covered(
+          accessor_records,
+          current_self,
+          build.generic_dict_owner_proofs,
+          build.type_method_owner_proofs,
+          build.instance_attr_owner_proofs) ||
+      !guard_last_success_build_code_accessor_proofs(
+          accessor_records, build.code_accessor_proofs)) {
     return false;
   }
 
@@ -2881,6 +2993,14 @@ static bool guard_last_success_actual_partial_tokens_match(
     if (!proof.matches_current(current_self)) {
       if (guard_fast_plan_capability_census_enabled()) {
         ++guard_actual_partial_capability_census.instance_attr_owner_misses;
+      }
+      return false;
+    }
+  }
+  for (const auto& proof : plan.code_accessor_proofs) {
+    if (!proof.matches_current()) {
+      if (guard_fast_plan_capability_census_enabled()) {
+        ++guard_actual_partial_capability_census.code_accessor_misses;
       }
       return false;
     }
@@ -3206,13 +3326,28 @@ static void guard_actual_partial_finalize_accessor_records(
   std::unordered_set<PyObject*> unique_instance_attr_owners;
   std::unordered_set<PyTypeObject*> unique_instance_attr_types;
   for (const auto& record : records) {
-    if (record.owner_ptr != nullptr) {
+    const bool is_owner_path_record =
+        record.kind ==
+            GuardActualPartialAccessorRecordKind::GenericDictBinding ||
+        record.kind ==
+            GuardActualPartialAccessorRecordKind::InstanceAttrBinding ||
+        record.kind ==
+            GuardActualPartialAccessorRecordKind::TypeMethodBinding ||
+        record.kind == GuardActualPartialAccessorRecordKind::
+                           UnsupportedInstanceAttrBinding;
+    if (is_owner_path_record && record.owner_ptr != nullptr) {
       unique_owners.insert(record.owner_ptr);
     }
     if (record.kind ==
         GuardActualPartialAccessorRecordKind::GenericDictBinding) {
       unique_generic_dict_owners.insert(record.owner_ptr);
-    } else {
+    } else if (
+        record.kind ==
+            GuardActualPartialAccessorRecordKind::InstanceAttrBinding ||
+        record.kind ==
+            GuardActualPartialAccessorRecordKind::TypeMethodBinding ||
+        record.kind == GuardActualPartialAccessorRecordKind::
+                           UnsupportedInstanceAttrBinding) {
       unique_instance_attr_owners.insert(record.owner_ptr);
       if (record.owner_type != nullptr) {
         unique_instance_attr_types.insert(record.owner_type);
@@ -3363,6 +3498,10 @@ static py::dict guard_actual_partial_get_capability_census() {
   result["instance_attr_type_misses"] = census.instance_attr_type_misses;
   result["instance_attr_type_refreshes"] =
       census.instance_attr_type_refreshes;
+  result["type_accessor_coverage_failures"] =
+      census.type_accessor_coverage_failures;
+  result["code_accessor_proofs"] = census.code_accessor_proofs;
+  result["code_accessor_misses"] = census.code_accessor_misses;
   return result;
 }
 
@@ -3378,6 +3517,53 @@ static void guard_actual_partial_mark_unsupported() {
       active_guard_actual_partial_self_depth > 0) {
     *active_guard_actual_partial_supported = false;
   }
+}
+
+static void guard_actual_partial_record_type_accessor(
+    PyObject* owner,
+    const std::string& source) {
+  if (active_guard_actual_partial_accessor_records == nullptr ||
+      !guard_actual_partial_is_recording_source(source) || owner == nullptr) {
+    return;
+  }
+  GuardActualPartialAccessorRecord record;
+  record.kind = GuardActualPartialAccessorRecordKind::TypeAccessor;
+  record.owner = py::reinterpret_borrow<py::object>(owner);
+  record.owner_ptr = owner;
+  record.owner_type = Py_TYPE(owner);
+  active_guard_actual_partial_accessor_records->push_back(std::move(record));
+}
+
+static void guard_actual_partial_record_code_accessor(
+    PyObject* parent,
+    const std::string& source) {
+  if (active_guard_actual_partial_accessor_records == nullptr ||
+      !guard_actual_partial_is_recording_source(source) || parent == nullptr) {
+    return;
+  }
+  PyObject* function = parent;
+  if (PyMethod_Check(parent)) {
+    function = PyMethod_GET_FUNCTION(parent);
+  } else if (PyInstanceMethod_Check(parent)) {
+    function = PyInstanceMethod_GET_FUNCTION(parent);
+  }
+  if (!PyFunction_Check(function)) {
+    *active_guard_actual_partial_supported = false;
+    return;
+  }
+  PyObject* code = PyFunction_GetCode(function);
+  if (code == nullptr) {
+    PyErr_Clear();
+    *active_guard_actual_partial_supported = false;
+    return;
+  }
+  GuardActualPartialAccessorRecord record;
+  record.kind = GuardActualPartialAccessorRecordKind::CodeAccessor;
+  record.owner = py::reinterpret_borrow<py::object>(function);
+  record.owner_ptr = function;
+  record.resolved = py::reinterpret_borrow<py::object>(code);
+  record.owner_type = Py_TYPE(function);
+  active_guard_actual_partial_accessor_records->push_back(std::move(record));
 }
 
 struct GuardActualPartialSelfScope {
@@ -6212,12 +6398,23 @@ class GuardManager {
       const bool actual_partial_self = C10_UNLIKELY(
           guard_actual_partial_is_recording_source(accessor->get_source()));
       if (actual_partial_self) {
+        const auto census_kind = accessor->actual_partial_census_kind();
         PyObject* census_parent = nullptr;
         if constexpr (std::is_same_v<T, PyObject>) {
           census_parent = value;
+          if (census_kind ==
+              GuardActualPartialAccessorCensusKind::Type) {
+            guard_actual_partial_record_type_accessor(
+                value, accessor->get_source());
+          } else if (
+              census_kind ==
+              GuardActualPartialAccessorCensusKind::Code) {
+            guard_actual_partial_record_code_accessor(
+                value, accessor->get_source());
+          }
         }
         guard_actual_partial_record_accessor_capability(
-            accessor->actual_partial_census_kind(), census_parent);
+            census_kind, census_parent);
       }
       GuardActualPartialSelfScope self_scope(actual_partial_self);
       const bool accessor_result =
@@ -10036,6 +10233,7 @@ bool run_root_guard_manager_with_last_success_receipt(
       std::move(build.type_method_type_proofs),
       std::move(build.instance_attr_owner_proofs),
       std::move(build.instance_attr_type_proofs),
+      std::move(build.code_accessor_proofs),
       std::move(build.cross_slice_relations),
       std::move(build.retained_token_objects));
   return true;

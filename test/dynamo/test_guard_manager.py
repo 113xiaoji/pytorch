@@ -1837,6 +1837,8 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 + census["type_accessor_uncovered_owners"]
                 == census["type_accessor_unique_owners"]
             ), census
+            assert census["type_accessor_coverage_failures"] == 0, census
+            assert census["code_accessor_proofs"] > 0, census
             for name in (
                 "type_accessor_generic_dict_covered_owners",
                 "type_accessor_instance_attr_covered_owners",
@@ -1884,6 +1886,9 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 census["type_accessor_any_proof_covered_owners"] == 0
             ), census
             assert census["type_accessor_uncovered_owners"] == 0, census
+            assert census["type_accessor_coverage_failures"] == 0, census
+            assert census["code_accessor_proofs"] == 0, census
+            assert census["code_accessor_misses"] == 0, census
 
             class CustomGetattributeModel(torch.nn.Module):
                 def __init__(self):
@@ -1913,6 +1918,54 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 census["instance_attr_binding_unsupported"]
                 >= census["instance_attr_non_default_getattribute"]
             ), census
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        env["TORCHDYNAMO_GUARD_FAST_PLAN_CAPABILITY_CENSUS"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
+    def test_actual_partial_code_accessor_proof_detects_code_mutation(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            class Model(torch.nn.Module):
+                def helper(self, x):
+                    return x + 1
+
+                def forward(self, x):
+                    return self.helper(x)
+
+            guards = torch._C._dynamo.guards
+            guards._reset_guard_fast_plan_capability_census()
+            counter = CompileCounter()
+            model = Model()
+            compiled = torch.compile(model, backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            for _ in range(8):
+                torch.testing.assert_close(compiled(x), torch.ones(2))
+            assert counter.frame_count == 1, counter.frame_count
+            stats = guards._get_guard_fast_plan_capability_census()
+            assert stats["code_accessor_proofs"] > 0, stats
+            assert stats["type_accessor_coverage_failures"] == 0, stats
+
+            original_code = Model.helper.__code__
+            try:
+                def replacement(self, x):
+                    return x + 2
+
+                Model.helper.__code__ = replacement.__code__
+                torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+                assert counter.frame_count == 2, counter.frame_count
+                stats = guards._get_guard_fast_plan_capability_census()
+                assert stats["code_accessor_misses"] > 0, stats
+            finally:
+                Model.helper.__code__ = original_code
         """
         env = os.environ.copy()
         env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
