@@ -215,6 +215,14 @@ struct GuardActualPartialCapabilityCensus {
   uint64_t call_function_no_args_accessors{0};
   uint64_t python_lambda_accessors{0};
   uint64_t other_accessors{0};
+  uint64_t type_accessor_unique_owners{0};
+  uint64_t type_accessor_unique_types{0};
+  uint64_t code_accessor_function_observations{0};
+  uint64_t code_accessor_bound_method_observations{0};
+  uint64_t code_accessor_instance_method_observations{0};
+  uint64_t code_accessor_unsupported_observations{0};
+  uint64_t code_accessor_unique_functions{0};
+  uint64_t code_accessor_unique_codes{0};
   uint64_t owner_path_records{0};
   uint64_t owner_path_unique_records{0};
   uint64_t generic_dict_binding_records{0};
@@ -424,6 +432,14 @@ struct GuardSubtreeInstanceAttrTypeProof {
 
 thread_local GuardActualPartialCapabilityCensus
     guard_actual_partial_capability_census;
+thread_local std::unordered_set<PyObject*>
+    guard_actual_partial_type_accessor_owners;
+thread_local std::unordered_set<PyTypeObject*>
+    guard_actual_partial_type_accessor_types;
+thread_local std::unordered_set<PyObject*>
+    guard_actual_partial_code_accessor_functions;
+thread_local std::unordered_set<PyObject*>
+    guard_actual_partial_code_accessor_codes;
 
 static bool guard_fast_plan_enabled() {
   static const bool env_enabled =
@@ -2894,7 +2910,8 @@ static void guard_actual_partial_record_leaf_capability(
 }
 
 static void guard_actual_partial_record_accessor_capability(
-    GuardActualPartialAccessorCensusKind kind) {
+    GuardActualPartialAccessorCensusKind kind,
+    PyObject* parent) {
   if (!guard_fast_plan_capability_census_enabled()) {
     return;
   }
@@ -2948,6 +2965,16 @@ static void guard_actual_partial_record_accessor_capability(
       break;
     case GuardActualPartialAccessorCensusKind::Type:
       ++census.type_accessors;
+      if (parent != nullptr) {
+        if (guard_actual_partial_type_accessor_owners.insert(parent).second) {
+          ++census.type_accessor_unique_owners;
+        }
+        if (guard_actual_partial_type_accessor_types
+                .insert(Py_TYPE(parent))
+                .second) {
+          ++census.type_accessor_unique_types;
+        }
+      }
       break;
     case GuardActualPartialAccessorCensusKind::TypeDict:
       ++census.type_dict_accessors;
@@ -2966,6 +2993,44 @@ static void guard_actual_partial_record_accessor_capability(
       break;
     case GuardActualPartialAccessorCensusKind::Code:
       ++census.code_accessors;
+      if (parent != nullptr) {
+        PyObject* function = parent;
+        bool is_bound_method = false;
+        bool is_instance_method = false;
+        if (PyMethod_Check(parent)) {
+          is_bound_method = true;
+          function = PyMethod_GET_FUNCTION(parent);
+        } else if (PyInstanceMethod_Check(parent)) {
+          is_instance_method = true;
+          function = PyInstanceMethod_GET_FUNCTION(parent);
+        } else if (!PyFunction_Check(parent)) {
+          ++census.code_accessor_unsupported_observations;
+          break;
+        }
+        PyObject* code = PyFunction_GetCode(function);
+        if (code == nullptr) {
+          PyErr_Clear();
+          ++census.code_accessor_unsupported_observations;
+          break;
+        }
+        if (is_bound_method) {
+          ++census.code_accessor_bound_method_observations;
+        } else if (is_instance_method) {
+          ++census.code_accessor_instance_method_observations;
+        } else {
+          ++census.code_accessor_function_observations;
+        }
+        if (guard_actual_partial_code_accessor_functions
+                .insert(function)
+                .second) {
+          ++census.code_accessor_unique_functions;
+        }
+        if (guard_actual_partial_code_accessor_codes.insert(code).second) {
+          ++census.code_accessor_unique_codes;
+        }
+      } else {
+        ++census.code_accessor_unsupported_observations;
+      }
       break;
     case GuardActualPartialAccessorCensusKind::Closure:
       ++census.closure_accessors;
@@ -3155,6 +3220,10 @@ static void guard_actual_partial_finalize_accessor_records(
 
 static void guard_actual_partial_reset_capability_census() {
   guard_actual_partial_capability_census = {};
+  guard_actual_partial_type_accessor_owners.clear();
+  guard_actual_partial_type_accessor_types.clear();
+  guard_actual_partial_code_accessor_functions.clear();
+  guard_actual_partial_code_accessor_codes.clear();
 }
 
 static py::dict guard_actual_partial_get_capability_census() {
@@ -3195,6 +3264,22 @@ static py::dict guard_actual_partial_get_capability_census() {
       census.call_function_no_args_accessors;
   result["python_lambda_accessors"] = census.python_lambda_accessors;
   result["other_accessors"] = census.other_accessors;
+  result["type_accessor_unique_owners"] =
+      census.type_accessor_unique_owners;
+  result["type_accessor_unique_types"] =
+      census.type_accessor_unique_types;
+  result["code_accessor_function_observations"] =
+      census.code_accessor_function_observations;
+  result["code_accessor_bound_method_observations"] =
+      census.code_accessor_bound_method_observations;
+  result["code_accessor_instance_method_observations"] =
+      census.code_accessor_instance_method_observations;
+  result["code_accessor_unsupported_observations"] =
+      census.code_accessor_unsupported_observations;
+  result["code_accessor_unique_functions"] =
+      census.code_accessor_unique_functions;
+  result["code_accessor_unique_codes"] =
+      census.code_accessor_unique_codes;
   result["owner_path_records"] = census.owner_path_records;
   result["owner_path_unique_records"] = census.owner_path_unique_records;
   result["generic_dict_binding_records"] =
@@ -6079,7 +6164,7 @@ class GuardManager {
           guard_actual_partial_is_recording_source(accessor->get_source()));
       if (actual_partial_self) {
         guard_actual_partial_record_accessor_capability(
-            accessor->actual_partial_census_kind());
+            accessor->actual_partial_census_kind(), value);
       }
       GuardActualPartialSelfScope self_scope(actual_partial_self);
       const bool accessor_result =

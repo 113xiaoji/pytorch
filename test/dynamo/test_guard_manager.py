@@ -1809,6 +1809,29 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 )
             )
             assert classified_accessors == census["accessor_observations"], census
+            assert (
+                census["code_accessor_function_observations"]
+                + census["code_accessor_bound_method_observations"]
+                + census["code_accessor_instance_method_observations"]
+                + census["code_accessor_unsupported_observations"]
+                == census["code_accessors"]
+            ), census
+            assert (
+                census["type_accessor_unique_owners"]
+                <= census["type_accessors"]
+            ), census
+            assert (
+                census["type_accessor_unique_types"]
+                <= census["type_accessor_unique_owners"]
+            ), census
+            assert (
+                census["code_accessor_unique_functions"]
+                <= census["code_accessors"]
+            ), census
+            assert (
+                census["code_accessor_unique_codes"]
+                <= census["code_accessors"]
+            ), census
 
             guards._reset_guard_fast_plan_capability_census()
             census = guards._get_guard_fast_plan_capability_census()
@@ -1839,6 +1862,10 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             assert census["instance_attr_owner_misses"] == 0, census
             assert census["instance_attr_type_misses"] == 0, census
             assert census["instance_attr_type_refreshes"] == 0, census
+            assert census["type_accessor_unique_owners"] == 0, census
+            assert census["type_accessor_unique_types"] == 0, census
+            assert census["code_accessor_unique_functions"] == 0, census
+            assert census["code_accessor_unique_codes"] == 0, census
 
             class CustomGetattributeModel(torch.nn.Module):
                 def __init__(self):
