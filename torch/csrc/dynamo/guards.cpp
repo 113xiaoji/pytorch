@@ -8399,12 +8399,16 @@ class DictGetItemGuardAccessor : public GuardAccessor {
   // check_verbose_nopybind.
   bool check_nopybind(PyObject* obj, bool matches_dict_tag = false) override {
     if (matches_dict_tag && _is_immutable_object &&
+        active_guard_subtree_memo_recorder == nullptr &&
+        !_guard_manager->has_object_aliasing_guard() &&
+        !_guard_manager->has_no_tensor_aliasing_guard() &&
         !is_recording_dict_pointers(get_guard_manager()->get_root()) &&
         _guard_manager->has_no_accessors()) {
       // immutable object and dict tag matches, we can skip the guard subtree.
       // NB: We only skip the subtree if there are no accessors in the subtree.
       // This is specifically for tensors which are used in symbolic shape C++
       // guards, and therefore have accessors on the tensor GuardManager itself.
+      // Relational guards must still observe every operand.
       return true;
     }
 
