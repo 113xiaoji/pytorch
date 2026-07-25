@@ -1447,6 +1447,17 @@ class RecursiveDictGuardTests(RecursiveDictTagTests):
 
 
 class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
+    @staticmethod
+    def _run_fast_plan_script(script):
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
     def test_actual_partial_preserves_module_and_residual_guards(self):
         script = """
             import torch
@@ -1501,14 +1512,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             torch.testing.assert_close(compiled_alias(a, a), alias_sensitive(a, a))
             torch.testing.assert_close(compiled_alias(a, b), alias_sensitive(a, b))
         """
-        env = os.environ.copy()
-        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(script)],
-            cwd=os.getcwd(),
-            env=env,
-            check=True,
-        )
+        self._run_fast_plan_script(script)
 
     def test_actual_partial_plan_is_per_cache_entry(self):
         script = """
@@ -1557,14 +1561,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 entry._debug_fast_guard_enabled for entry in original_entries
             ), [entry._debug_fast_guard_enabled for entry in original_entries]
         """
-        env = os.environ.copy()
-        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(script)],
-            cwd=os.getcwd(),
-            env=env,
-            check=True,
-        )
+        self._run_fast_plan_script(script)
 
     def test_actual_partial_preserves_cross_slice_alias_relations(self):
         script = """
@@ -1616,14 +1613,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             )
             assert distinct_counter.frame_count == 2, distinct_counter.frame_count
         """
-        env = os.environ.copy()
-        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(script)],
-            cwd=os.getcwd(),
-            env=env,
-            check=True,
-        )
+        self._run_fast_plan_script(script)
 
     def test_actual_partial_preserves_dict_tagged_alias_relations(self):
         script = """
@@ -1695,14 +1685,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             torch.testing.assert_close(distinct(), torch.full((2,), 4.0))
             assert distinct_counter.frame_count == 2, distinct_counter.frame_count
         """
-        env = os.environ.copy()
-        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(script)],
-            cwd=os.getcwd(),
-            env=env,
-            check=True,
-        )
+        self._run_fast_plan_script(script)
 
     def test_actual_partial_preserves_tensor_no_hasattr_guard(self):
         script = """
@@ -1736,14 +1719,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
             assert counter.frame_count == 2, counter.frame_count
         """
-        env = os.environ.copy()
-        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(script)],
-            cwd=os.getcwd(),
-            env=env,
-            check=True,
-        )
+        self._run_fast_plan_script(script)
 
     def test_actual_partial_refreshes_unrelated_tensor_type_change(self):
         script = """
@@ -1775,14 +1751,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             finally:
                 del torch.Tensor._fastguard_unrelated_type_change
         """
-        env = os.environ.copy()
-        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(script)],
-            cwd=os.getcwd(),
-            env=env,
-            check=True,
-        )
+        self._run_fast_plan_script(script)
 
     def test_actual_partial_type_proof_fails_closed_on_class_attr(self):
         script = """
@@ -1814,14 +1783,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             finally:
                 del torch.Tensor._dynamo_dynamic_indices
         """
-        env = os.environ.copy()
-        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(script)],
-            cwd=os.getcwd(),
-            env=env,
-            check=True,
-        )
+        self._run_fast_plan_script(script)
 
     def test_actual_partial_rejects_ordinary_no_hasattr(self):
         script = """
@@ -1850,14 +1812,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             torch.testing.assert_close(compiled(x), torch.full((2,), 6.0))
             assert counter.frame_count == 2, counter.frame_count
         """
-        env = os.environ.copy()
-        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(script)],
-            cwd=os.getcwd(),
-            env=env,
-            check=True,
-        )
+        self._run_fast_plan_script(script)
 
     def test_actual_partial_custom_getattribute_fails_closed(self):
         script = """
@@ -1887,14 +1842,8 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
             assert counter.frame_count == 2, counter.frame_count
         """
-        env = os.environ.copy()
-        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(script)],
-            cwd=os.getcwd(),
-            env=env,
-            check=True,
-        )
+        self._run_fast_plan_script(script)
+
     def test_actual_partial_retains_compiled_self_lifetime(self):
         script = """
             import gc
@@ -1926,14 +1875,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             torch.testing.assert_close(compiled(x), torch.ones(2))
             assert counter.frame_count == 1, counter.frame_count
         """
-        env = os.environ.copy()
-        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(script)],
-            cwd=os.getcwd(),
-            env=env,
-            check=True,
-        )
+        self._run_fast_plan_script(script)
 
     def test_actual_partial_static_module_attr_binding_proof(self):
         script = """
@@ -2024,14 +1966,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             for _ in range(8):
                 torch.testing.assert_close(dynamic_compiled(x), torch.ones(2))
         """
-        env = os.environ.copy()
-        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(script)],
-            cwd=os.getcwd(),
-            env=env,
-            check=True,
-        )
+        self._run_fast_plan_script(script)
 
     def test_actual_partial_static_type_attr_binding_proof(self):
         script = """
@@ -2115,14 +2050,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             for _ in range(8):
                 torch.testing.assert_close(custom_compiled(x), torch.ones(2))
         """
-        env = os.environ.copy()
-        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(script)],
-            cwd=os.getcwd(),
-            env=env,
-            check=True,
-        )
+        self._run_fast_plan_script(script)
 
     def test_actual_partial_exact_set_equals_token_detects_mutation(self):
         script = """
@@ -2152,14 +2080,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             torch.testing.assert_close(compiled(x), torch.full((2,), -1.0))
             assert counter.frame_count == 2, counter.frame_count
         """
-        env = os.environ.copy()
-        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(script)],
-            cwd=os.getcwd(),
-            env=env,
-            check=True,
-        )
+        self._run_fast_plan_script(script)
 
     def test_actual_partial_code_accessor_proof_detects_code_mutation(self):
         script = """
@@ -2192,14 +2113,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             finally:
                 Model.helper.__code__ = original_code
         """
-        env = os.environ.copy()
-        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(script)],
-            cwd=os.getcwd(),
-            env=env,
-            check=True,
-        )
+        self._run_fast_plan_script(script)
 
     def test_actual_partial_type_method_binding_proof(self):
         script = """
@@ -2283,14 +2197,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             finally:
                 del RefreshModel._fastguard_unrelated_type_change
         """
-        env = os.environ.copy()
-        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(script)],
-            cwd=os.getcwd(),
-            env=env,
-            check=True,
-        )
+        self._run_fast_plan_script(script)
 
     def test_actual_partial_instance_attr_binding_proof(self):
         script = """
@@ -2444,14 +2351,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             finally:
                 del RefreshModel._fastguard_unrelated_type_change
         """
-        env = os.environ.copy()
-        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(script)],
-            cwd=os.getcwd(),
-            env=env,
-            check=True,
-        )
+        self._run_fast_plan_script(script)
 
     def test_actual_partial_clears_dynamic_descriptor_exception(self):
         script = """
@@ -2502,14 +2402,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             GLOBAL_DICT["noise"] = [101]
             torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
         """
-        env = os.environ.copy()
-        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(script)],
-            cwd=os.getcwd(),
-            env=env,
-            check=True,
-        )
+        self._run_fast_plan_script(script)
 
     def test_actual_partial_generic_dict_binding_proof(self):
         script = """
@@ -2547,14 +2440,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             GLOBAL_DICT["noise"] = [100]
             torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
         """
-        env = os.environ.copy()
-        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(script)],
-            cwd=os.getcwd(),
-            env=env,
-            check=True,
-        )
+        self._run_fast_plan_script(script)
 
     def test_actual_partial_misses_on_data_descriptor_install(self):
         script = """
@@ -2595,14 +2481,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             finally:
                 del Model.scale
         """
-        env = os.environ.copy()
-        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
-        subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(script)],
-            cwd=os.getcwd(),
-            env=env,
-            check=True,
-        )
+        self._run_fast_plan_script(script)
 
 
 if __name__ == "__main__":
