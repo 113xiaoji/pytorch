@@ -154,6 +154,9 @@ enum class GuardSubtreeProbeTokenKind : uint8_t {
 
 constexpr size_t kGuardLastSuccessActualMaxTokens = 65536;
 constexpr uint64_t kGuardLastSuccessActualStablePasses = 3;
+// Bound successful-but-changing training signatures so an entry that never
+// stabilizes cannot pay recording and plan-building cost forever.
+constexpr uint64_t kGuardLastSuccessActualMaxUnstablePasses = 8;
 
 enum class GuardActualPartialAccessorRecordKind : uint8_t {
   GenericDictBinding,
@@ -2677,6 +2680,7 @@ struct GuardLastSuccessPartialPlan {
     root_key = nullptr;
 
     stable_passes = 0;
+    unstable_passes = 0;
     self_weakref = py::object();
     self_type = nullptr;
     self_framelocals_index = -1;
@@ -2739,13 +2743,26 @@ struct GuardLastSuccessPartialPlan {
           new_code_accessor_proofs,
       std::vector<GuardCrossSliceRelationPlan>&& new_cross_slice_relations,
       std::vector<py::object>&& new_retained_token_objects) {
-    const bool stable = entry_key == new_entry_key &&
-        root_key == new_root_key && !stability_tokens.empty() &&
+    const bool same_entry =
+        entry_key == new_entry_key && root_key == new_root_key;
+    const bool has_training_signature =
+        same_entry && !stability_tokens.empty();
+    const bool stable = has_training_signature &&
         guard_subtree_token_vectors_match(
             new_stability_tokens, stability_tokens);
     if (stable) {
       stable_passes += 1;
     } else {
+      if (has_training_signature) {
+        unstable_passes += 1;
+        if (unstable_passes >=
+            kGuardLastSuccessActualMaxUnstablePasses) {
+          disable();
+          return false;
+        }
+      } else {
+        unstable_passes = 0;
+      }
       entry_key = new_entry_key;
       root_key = new_root_key;
       stability_tokens = std::move(new_stability_tokens);
@@ -2776,6 +2793,7 @@ struct GuardLastSuccessPartialPlan {
     if (state != GuardLastSuccessPartialPlanState::Enabled &&
         stable_passes >= kGuardLastSuccessActualStablePasses) {
       state = GuardLastSuccessPartialPlanState::Enabled;
+      unstable_passes = 0;
       return true;
     }
     return false;
@@ -2786,6 +2804,7 @@ struct GuardLastSuccessPartialPlan {
   void* entry_key{nullptr};
   void* root_key{nullptr};
   uint64_t stable_passes{0};
+  uint64_t unstable_passes{0};
   py::object self_weakref;
   PyTypeObject* self_type{nullptr};
   int self_framelocals_index{-1};
@@ -10181,6 +10200,16 @@ void reset_guard_last_success_receipt(void* receipt) {
   static_cast<GuardLastSuccessReceipt*>(receipt)->reset();
 }
 
+bool is_guard_last_success_receipt_enabled(void* receipt) {
+  if (receipt == nullptr) {
+    return false;
+  }
+  const auto* state =
+      static_cast<const GuardLastSuccessReceipt*>(receipt);
+  return state->actual_partial.state ==
+      GuardLastSuccessPartialPlanState::Enabled;
+}
+
 bool run_root_guard_manager_with_last_success_receipt(
     void* receipt,
     void* entry_key,
@@ -10208,7 +10237,9 @@ bool run_root_guard_manager_with_last_success_receipt(
     if (!token_miss) {
       return result;
     }
-    state->actual_partial.reset();
+    // A token miss only rejects this input. Keep the per-entry plan so it can
+    // still serve later inputs that match it while this lookup falls back to
+    // the full guard.
   }
 
   if (!state->actual_partial.should_train()) {
@@ -10230,7 +10261,9 @@ bool run_root_guard_manager_with_last_success_receipt(
     GuardSubtreeMemoRecorderScope recorder(
         &tokens, &debug_paths, &accessor_records, &actual_partial_supported);
     if (!run_root_guard_manager(root, f_locals)) {
-      state->reset();
+      // Cache lookup probes entries that commonly do not own the current
+      // input. That failure does not invalidate this entry's plan or training
+      // progress.
       return false;
     }
   }
@@ -10257,7 +10290,6 @@ bool run_root_guard_manager_with_last_success_receipt(
     state->actual_partial.disable();
     return true;
   }
-
 
   state->actual_partial.observe_successful_training_pass(
       entry_key,

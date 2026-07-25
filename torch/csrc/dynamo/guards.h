@@ -22,6 +22,7 @@ bool run_root_guard_manager_with_last_success_receipt(
 void* create_guard_last_success_receipt();
 void destroy_guard_last_success_receipt(void* receipt);
 void reset_guard_last_success_receipt(void* receipt);
+bool is_guard_last_success_receipt_enabled(void* receipt);
 
 extern thread_local bool tls_is_in_mode_without_ignore_compile_internals;
 

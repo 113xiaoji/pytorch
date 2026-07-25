@@ -1468,6 +1468,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
         script = """
             import torch
             from torch._dynamo.testing import CompileCounter
+            from torch._dynamo.eval_frame import _debug_get_cache_entry_list
 
             GLOBAL_DICT = {"used": 1, "noise": [0]}
 
@@ -1492,6 +1493,12 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                         compiled(x), torch.full_like(x, 2.0)
                     )
             assert counter.frame_count == 2, counter.frame_count
+            cache_entries = _debug_get_cache_entry_list(Model.forward.__code__)
+            assert len(cache_entries) == 2, len(cache_entries)
+            assert all(
+                entry._debug_fast_guard_enabled for entry in cache_entries
+            ), [entry._debug_fast_guard_enabled for entry in cache_entries]
+            original_entries = cache_entries
 
             model.mode = 5
             for i, x in enumerate(inputs):
@@ -1500,6 +1507,9 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                     compiled(x), torch.full_like(x, 6.0)
                 )
             assert counter.frame_count == 4, counter.frame_count
+            assert all(
+                entry._debug_fast_guard_enabled for entry in original_entries
+            ), [entry._debug_fast_guard_enabled for entry in original_entries]
         """
         env = os.environ.copy()
         env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
