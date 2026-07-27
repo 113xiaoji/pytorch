@@ -147,7 +147,6 @@ enum class GuardSubtreeProbeTokenKind : uint8_t {
   NoTensorAliasing,
   ObjectAliasing,
   BoundMethod,
-  FrameGlobals,
   TensorNoHasAttr,
   ExactSetEquals,
 };
@@ -168,7 +167,6 @@ enum class GuardActualPartialAccessorRecordKind : uint8_t {
   StaticModuleDynamicAttrBinding,
   StaticTypeAttrBinding,
   StaticTypeDynamicAttrBinding,
-  UnsupportedInstanceAttrBinding,
   TypeAccessor,
   CodeAccessor,
 };
@@ -282,8 +280,7 @@ struct GuardSubtreeTypeMethodTypeProof {
   unsigned int version{0};
   std::vector<GuardSubtreeTypeMethodBinding> bindings;
 
-  bool matches_or_refreshes_current(bool& refreshed) {
-    refreshed = false;
+  bool matches_or_refreshes_current() {
     auto* current_type = reinterpret_cast<PyTypeObject*>(type.ptr());
     if (guard_subtree_type_version_is_valid(current_type) &&
         current_type->tp_version_tag == version) {
@@ -308,7 +305,6 @@ struct GuardSubtreeTypeMethodTypeProof {
       return false;
     }
     version = current_type->tp_version_tag;
-    refreshed = true;
     return true;
   }
 };
@@ -346,8 +342,7 @@ struct GuardSubtreeInstanceAttrTypeProof {
   unsigned int version{0};
   std::vector<GuardSubtreeInstanceAttrTypeBinding> bindings;
 
-  bool matches_or_refreshes_current(bool& refreshed) {
-    refreshed = false;
+  bool matches_or_refreshes_current() {
     auto* current_type = reinterpret_cast<PyTypeObject*>(type.ptr());
     if (guard_subtree_type_version_is_valid(current_type) &&
         current_type->tp_version_tag == version) {
@@ -373,7 +368,6 @@ struct GuardSubtreeInstanceAttrTypeProof {
       return false;
     }
     version = current_type->tp_version_tag;
-    refreshed = true;
     return true;
   }
 };
@@ -402,26 +396,8 @@ struct GuardSubtreeInstanceAttrDynamicProof {
   }
 };
 
-struct GuardSubtreeKnownStaticAttrOwnerProof {
-  py::object owner;
-  PyObject* owner_ptr{nullptr};
-  py::object key;
-  py::object expected;
-  py::object dict;
-  PyTypeObject* owner_type{nullptr};
-  bool owner_is_self{false};
-
-  bool matches_current(PyObject* current_self) const {
-    PyObject* current_owner = owner_is_self ? current_self : owner.ptr();
-    if (current_owner == nullptr || Py_TYPE(current_owner) != owner_type) {
-      return false;
-    }
-    PyObject** dictptr = _PyObject_GetDictPtr(current_owner);
-    return dictptr != nullptr && *dictptr == dict.ptr() &&
-        PyDict_CheckExact(*dictptr) &&
-        PyDict_GetItem(*dictptr, key.ptr()) == expected.ptr();
-  }
-};
+using GuardSubtreeKnownStaticAttrOwnerProof =
+    GuardSubtreeInstanceAttrOwnerProof;
 
 struct GuardSubtreeKnownStaticAttrTypeProof {
   py::object type;
@@ -1486,19 +1462,6 @@ struct GuardSubtreeEntryToken {
     return token;
   }
 
-  static GuardSubtreeEntryToken make_for_source(
-      PyObject* obj,
-      const std::string& source) {
-    if (is_global_source_path(source) && PyDict_CheckExact(obj)) {
-      GuardSubtreeEntryToken token;
-      token.object = obj;
-      token.type = Py_TYPE(obj);
-      token.kind = GuardSubtreeProbeTokenKind::FrameGlobals;
-      return token;
-    }
-    return make(obj);
-  }
-
   static bool make_tensor_match(
       PyObject* obj,
       TensorCheck& tensor_check,
@@ -1697,9 +1660,6 @@ struct GuardSubtreeEntryToken {
     if (object != other.object) {
       return false;
     }
-    if (kind == GuardSubtreeProbeTokenKind::FrameGlobals) {
-      return true;
-    }
     if (kind == GuardSubtreeProbeTokenKind::TensorMatch) {
       return tensor_dispatch_key == other.tensor_dispatch_key &&
           tensor_dtype == other.tensor_dtype &&
@@ -1783,7 +1743,6 @@ guard_last_success_partial_token_decision(
     case GuardSubtreeProbeTokenKind::DefaultDevice:
     case GuardSubtreeProbeTokenKind::GlobalState:
     case GuardSubtreeProbeTokenKind::TorchFunctionModeStack:
-    case GuardSubtreeProbeTokenKind::FrameGlobals:
       // These tokens are valid in the full slow receipt, but the partial fast
       // path has no local proof that dropping them preserves guard semantics.
       // Conservatively disable the partial plan instead of silently filtering
@@ -2673,18 +2632,21 @@ enum class GuardLastSuccessPartialPlanState : uint8_t {
   Disabled,
 };
 
-struct GuardLastSuccessPartialPlan {
-  void reset() {
-    state = GuardLastSuccessPartialPlanState::Empty;
-    entry_key = nullptr;
-    root_key = nullptr;
+struct GuardLastSuccessPartialPlanHeader {
+  GuardLastSuccessPartialPlanState state{
+      GuardLastSuccessPartialPlanState::Empty};
+  void* entry_key{nullptr};
+  void* root_key{nullptr};
+  uint64_t stable_passes{0};
+  uint64_t unstable_passes{0};
+  std::vector<GuardSubtreeEntryToken> stability_tokens;
+};
 
-    stable_passes = 0;
-    unstable_passes = 0;
+struct GuardLastSuccessPartialPlanPayload {
+  void clear() {
     self_weakref = py::object();
     self_type = nullptr;
     self_framelocals_index = -1;
-    stability_tokens.clear();
     tokens.clear();
     type_proofs.clear();
     generic_dict_owner_proofs.clear();
@@ -2701,114 +2663,9 @@ struct GuardLastSuccessPartialPlan {
     retained_token_objects.clear();
   }
 
-  void disable() {
-    reset();
-    state = GuardLastSuccessPartialPlanState::Disabled;
-  }
-
-  bool is_enabled_for(void* current_entry_key, void* current_root_key) const {
-    return state == GuardLastSuccessPartialPlanState::Enabled &&
-        entry_key == current_entry_key && root_key == current_root_key;
-  }
-
-  bool should_train() const {
-    return state != GuardLastSuccessPartialPlanState::Disabled;
-  }
-
-  bool observe_successful_training_pass(
-      void* new_entry_key,
-      void* new_root_key,
-      std::vector<GuardSubtreeEntryToken>&& new_stability_tokens,
-      std::vector<GuardSubtreeEntryToken>&& new_tokens,
-      std::vector<GuardSubtreeTypeProof>&& new_type_proofs,
-      std::vector<GuardSubtreeGenericDictOwnerProof>&&
-          new_generic_dict_owner_proofs,
-      std::vector<GuardSubtreeTypeMethodOwnerProof>&&
-          new_type_method_owner_proofs,
-      std::vector<GuardSubtreeTypeMethodTypeProof>&&
-          new_type_method_type_proofs,
-      std::vector<GuardSubtreeInstanceAttrOwnerProof>&&
-          new_instance_attr_owner_proofs,
-      std::vector<GuardSubtreeInstanceAttrTypeProof>&&
-          new_instance_attr_type_proofs,
-      std::vector<GuardSubtreeInstanceAttrDynamicProof>&&
-          new_instance_attr_dynamic_proofs,
-      std::vector<GuardSubtreeKnownStaticAttrOwnerProof>&&
-          new_static_module_attr_owner_proofs,
-      std::vector<GuardSubtreeKnownStaticAttrTypeProof>&&
-          new_static_module_attr_type_proofs,
-      std::vector<GuardSubtreeKnownStaticDynamicAttrProof>&&
-          new_static_module_dynamic_attr_proofs,
-      std::vector<GuardSubtreeCodeAccessorProof>&&
-          new_code_accessor_proofs,
-      std::vector<GuardCrossSliceRelationPlan>&& new_cross_slice_relations,
-      std::vector<py::object>&& new_retained_token_objects) {
-    const bool same_entry =
-        entry_key == new_entry_key && root_key == new_root_key;
-    const bool has_training_signature =
-        same_entry && !stability_tokens.empty();
-    const bool stable = has_training_signature &&
-        guard_subtree_token_vectors_match(
-            new_stability_tokens, stability_tokens);
-    if (stable) {
-      stable_passes += 1;
-    } else {
-      if (has_training_signature) {
-        unstable_passes += 1;
-        if (unstable_passes >=
-            kGuardLastSuccessActualMaxUnstablePasses) {
-          disable();
-          return false;
-        }
-      } else {
-        unstable_passes = 0;
-      }
-      entry_key = new_entry_key;
-      root_key = new_root_key;
-      stability_tokens = std::move(new_stability_tokens);
-      stable_passes = 1;
-      state = GuardLastSuccessPartialPlanState::Training;
-    }
-    tokens = std::move(new_tokens);
-    type_proofs = std::move(new_type_proofs);
-    generic_dict_owner_proofs =
-        std::move(new_generic_dict_owner_proofs);
-    type_method_owner_proofs =
-        std::move(new_type_method_owner_proofs);
-    type_method_type_proofs = std::move(new_type_method_type_proofs);
-    instance_attr_owner_proofs =
-        std::move(new_instance_attr_owner_proofs);
-    instance_attr_type_proofs = std::move(new_instance_attr_type_proofs);
-    instance_attr_dynamic_proofs =
-        std::move(new_instance_attr_dynamic_proofs);
-    static_module_attr_owner_proofs =
-        std::move(new_static_module_attr_owner_proofs);
-    static_module_attr_type_proofs =
-        std::move(new_static_module_attr_type_proofs);
-    static_module_dynamic_attr_proofs =
-        std::move(new_static_module_dynamic_attr_proofs);
-    code_accessor_proofs = std::move(new_code_accessor_proofs);
-    cross_slice_relations = std::move(new_cross_slice_relations);
-    retained_token_objects = std::move(new_retained_token_objects);
-    if (state != GuardLastSuccessPartialPlanState::Enabled &&
-        stable_passes >= kGuardLastSuccessActualStablePasses) {
-      state = GuardLastSuccessPartialPlanState::Enabled;
-      unstable_passes = 0;
-      return true;
-    }
-    return false;
-  }
-
-  GuardLastSuccessPartialPlanState state{
-      GuardLastSuccessPartialPlanState::Empty};
-  void* entry_key{nullptr};
-  void* root_key{nullptr};
-  uint64_t stable_passes{0};
-  uint64_t unstable_passes{0};
   py::object self_weakref;
   PyTypeObject* self_type{nullptr};
   int self_framelocals_index{-1};
-  std::vector<GuardSubtreeEntryToken> stability_tokens;
   std::vector<GuardSubtreeEntryToken> tokens;
   std::vector<GuardSubtreeTypeProof> type_proofs;
   std::vector<GuardSubtreeGenericDictOwnerProof> generic_dict_owner_proofs;
@@ -2827,6 +2684,79 @@ struct GuardLastSuccessPartialPlan {
   std::vector<GuardSubtreeCodeAccessorProof> code_accessor_proofs;
   std::vector<GuardCrossSliceRelationPlan> cross_slice_relations;
   std::vector<py::object> retained_token_objects;
+};
+
+struct GuardLastSuccessPartialPlanBuild
+    : GuardLastSuccessPartialPlanPayload {
+  std::vector<GuardSubtreeEntryToken> stability_tokens;
+};
+
+struct GuardLastSuccessPartialPlan
+    : GuardLastSuccessPartialPlanHeader,
+      GuardLastSuccessPartialPlanPayload {
+  void reset() {
+    state = GuardLastSuccessPartialPlanState::Empty;
+    entry_key = nullptr;
+    root_key = nullptr;
+
+    stable_passes = 0;
+    unstable_passes = 0;
+    stability_tokens.clear();
+    GuardLastSuccessPartialPlanPayload::clear();
+  }
+
+  void disable() {
+    reset();
+    state = GuardLastSuccessPartialPlanState::Disabled;
+  }
+
+  bool is_enabled_for(void* current_entry_key, void* current_root_key) const {
+    return state == GuardLastSuccessPartialPlanState::Enabled &&
+        entry_key == current_entry_key && root_key == current_root_key;
+  }
+
+  bool should_train() const {
+    return state != GuardLastSuccessPartialPlanState::Disabled;
+  }
+
+  void observe_successful_training_pass(
+      void* new_entry_key,
+      void* new_root_key,
+      GuardLastSuccessPartialPlanBuild&& build) {
+    const bool same_entry =
+        entry_key == new_entry_key && root_key == new_root_key;
+    const bool has_training_signature =
+        same_entry && !stability_tokens.empty();
+    const bool stable = has_training_signature &&
+        guard_subtree_token_vectors_match(
+            build.stability_tokens, stability_tokens);
+    if (stable) {
+      stable_passes += 1;
+    } else {
+      if (has_training_signature) {
+        unstable_passes += 1;
+        if (unstable_passes >=
+            kGuardLastSuccessActualMaxUnstablePasses) {
+          disable();
+          return;
+        }
+      } else {
+        unstable_passes = 0;
+      }
+      entry_key = new_entry_key;
+      root_key = new_root_key;
+      stability_tokens = std::move(build.stability_tokens);
+      stable_passes = 1;
+      state = GuardLastSuccessPartialPlanState::Training;
+    }
+    static_cast<GuardLastSuccessPartialPlanPayload&>(*this) =
+        std::move(static_cast<GuardLastSuccessPartialPlanPayload&>(build));
+    if (state != GuardLastSuccessPartialPlanState::Enabled &&
+        stable_passes >= kGuardLastSuccessActualStablePasses) {
+      state = GuardLastSuccessPartialPlanState::Enabled;
+      unstable_passes = 0;
+    }
+  }
 };
 
 struct GuardLastSuccessReceipt {
@@ -2926,13 +2856,6 @@ static bool guard_subtree_memo_tokens_match(
     if (guard_subtree_token_is_reachability_only(token, i)) {
       // Parent tokens prove whether this non-root object is still reachable.
       continue;
-    }
-    if (token.kind == GuardSubtreeProbeTokenKind::FrameGlobals) {
-      // FrameGlobals is only safe for full slow-guard receipt comparison,
-      // where every run records a fresh child token vector. Existing hot
-      // memo checks rely on exact parent container tokens to prove non-root
-      // ObjectOnly tokens are still reachable.
-      return false;
     }
     PyObject* current_object = i == 0 ? root_value : token.object;
     if (token.kind == GuardSubtreeProbeTokenKind::ObjectOnly) {
@@ -3063,30 +2986,7 @@ static bool guard_last_success_extract_self_partial_tokens(
   return true;
 }
 
-struct GuardLastSuccessPartialPlanBuild {
-  std::vector<GuardSubtreeEntryToken> stability_tokens;
-  std::vector<GuardSubtreeEntryToken> hot_tokens;
-  std::vector<GuardSubtreeTypeProof> type_proofs;
-  std::vector<GuardSubtreeGenericDictOwnerProof> generic_dict_owner_proofs;
-  std::vector<GuardSubtreeTypeMethodOwnerProof> type_method_owner_proofs;
-  std::vector<GuardSubtreeTypeMethodTypeProof> type_method_type_proofs;
-  std::vector<GuardSubtreeInstanceAttrOwnerProof> instance_attr_owner_proofs;
-  std::vector<GuardSubtreeInstanceAttrTypeProof> instance_attr_type_proofs;
-  std::vector<GuardSubtreeInstanceAttrDynamicProof>
-      instance_attr_dynamic_proofs;
-  std::vector<GuardSubtreeKnownStaticAttrOwnerProof>
-      static_module_attr_owner_proofs;
-  std::vector<GuardSubtreeKnownStaticAttrTypeProof>
-      static_module_attr_type_proofs;
-  std::vector<GuardSubtreeKnownStaticDynamicAttrProof>
-      static_module_dynamic_attr_proofs;
-  std::vector<GuardSubtreeCodeAccessorProof> code_accessor_proofs;
-  std::vector<GuardCrossSliceRelationPlan> cross_slice_relations;
-  std::vector<py::object> retained_token_objects;
-};
-
 static bool guard_last_success_prepare_actual_partial(
-    GuardLastSuccessPartialPlan* plan,
     FrameLocalsMapping* f_locals,
     int self_framelocals_index,
     const std::vector<GuardSubtreeEntryToken>& tokens,
@@ -3101,8 +3001,7 @@ static bool guard_last_success_prepare_actual_partial(
   if (partial_tokens.size() > kGuardLastSuccessActualMaxTokens) {
     return false;
   }
-  if (partial_tokens.empty() ||
-      partial_tokens[0].kind == GuardSubtreeProbeTokenKind::FrameGlobals) {
+  if (partial_tokens.empty()) {
     return false;
   }
 
@@ -3119,9 +3018,9 @@ static bool guard_last_success_prepare_actual_partial(
     PyErr_Clear();
     return false;
   }
-  plan->self_weakref = py::reinterpret_steal<py::object>(weakref);
-  plan->self_type = Py_TYPE(current_self);
-  plan->self_framelocals_index = self_framelocals_index;
+  build.self_weakref = py::reinterpret_steal<py::object>(weakref);
+  build.self_type = Py_TYPE(current_self);
+  build.self_framelocals_index = self_framelocals_index;
 
   if (!guard_last_success_build_generic_dict_proofs(
           accessor_records,
@@ -3173,7 +3072,7 @@ static bool guard_last_success_prepare_actual_partial(
           tokens,
           partial_tokens,
           build.stability_tokens,
-          build.hot_tokens,
+          build.tokens,
           build.type_proofs,
           build.cross_slice_relations,
           build.retained_token_objects)) {
@@ -3184,7 +3083,7 @@ static bool guard_last_success_prepare_actual_partial(
       build.type_method_owner_proofs,
       build.instance_attr_owner_proofs,
       build.static_module_attr_owner_proofs,
-      build.hot_tokens);
+      build.tokens);
   return true;
 }
 
@@ -3222,8 +3121,7 @@ static bool guard_last_success_actual_partial_tokens_match(
     }
   }
   for (auto& proof : plan.type_method_type_proofs) {
-    bool refreshed = false;
-    if (!proof.matches_or_refreshes_current(refreshed)) {
+    if (!proof.matches_or_refreshes_current()) {
       return false;
     }
   }
@@ -3233,8 +3131,7 @@ static bool guard_last_success_actual_partial_tokens_match(
     }
   }
   for (auto& proof : plan.instance_attr_type_proofs) {
-    bool refreshed = false;
-    if (!proof.matches_or_refreshes_current(refreshed)) {
+    if (!proof.matches_or_refreshes_current()) {
       return false;
     }
   }
@@ -3280,7 +3177,6 @@ thread_local std::vector<GuardActualPartialAccessorRecord>*
     active_guard_actual_partial_accessor_records = nullptr;
 thread_local bool* active_guard_actual_partial_supported = nullptr;
 thread_local int active_guard_actual_partial_self_depth = 0;
-thread_local bool active_guard_subtree_memo_relax_global_dicts = false;
 
 static bool guard_actual_partial_is_recording_source(
     const std::string& source);
@@ -3301,6 +3197,7 @@ static void guard_actual_partial_record_generic_dict_binding(
       PyDict_CheckExact(dict);
   if (!exact_owner_dict) {
     guard_actual_partial_mark_unsupported();
+    return;
   }
 
   GuardActualPartialAccessorRecord record;
@@ -3445,9 +3342,8 @@ static void guard_actual_partial_record_instance_attr_binding(
     record.kind =
         GuardActualPartialAccessorRecordKind::StaticTypeDynamicAttrBinding;
   } else {
-    record.kind =
-        GuardActualPartialAccessorRecordKind::UnsupportedInstanceAttrBinding;
     guard_actual_partial_mark_unsupported();
+    return;
   }
   active_guard_actual_partial_accessor_records->push_back(std::move(record));
 
@@ -3510,7 +3406,6 @@ static void guard_actual_partial_record_code_accessor(
   record.owner = py::reinterpret_borrow<py::object>(function);
   record.owner_ptr = function;
   record.resolved = py::reinterpret_borrow<py::object>(code);
-  record.owner_type = Py_TYPE(function);
   active_guard_actual_partial_accessor_records->push_back(std::move(record));
 }
 
@@ -3535,8 +3430,7 @@ struct GuardSubtreeMemoRecorderScope {
       std::vector<GuardSubtreeEntryToken>* tokens,
       std::vector<std::string>* debug_paths = nullptr,
       std::vector<GuardActualPartialAccessorRecord>* accessor_records = nullptr,
-      bool* actual_partial_supported = nullptr,
-      bool relax_global_dicts = false)
+      bool* actual_partial_supported = nullptr)
       : previous(active_guard_subtree_memo_recorder),
         previous_debug_paths(active_guard_subtree_memo_debug_paths),
         previous_accessor_records(
@@ -3544,9 +3438,7 @@ struct GuardSubtreeMemoRecorderScope {
         previous_actual_partial_supported(
             active_guard_actual_partial_supported),
         previous_actual_partial_self_depth(
-            active_guard_actual_partial_self_depth),
-        previous_relax_global_dicts(
-            active_guard_subtree_memo_relax_global_dicts) {
+            active_guard_actual_partial_self_depth) {
     active_guard_subtree_memo_recorder = tokens;
     active_guard_subtree_memo_debug_paths = debug_paths;
     active_guard_actual_partial_accessor_records = accessor_records;
@@ -3554,7 +3446,6 @@ struct GuardSubtreeMemoRecorderScope {
     if (actual_partial_supported != nullptr) {
       active_guard_actual_partial_self_depth = 0;
     }
-    active_guard_subtree_memo_relax_global_dicts = relax_global_dicts;
   }
 
   ~GuardSubtreeMemoRecorderScope() {
@@ -3565,8 +3456,6 @@ struct GuardSubtreeMemoRecorderScope {
         previous_actual_partial_supported;
     active_guard_actual_partial_self_depth =
         previous_actual_partial_self_depth;
-    active_guard_subtree_memo_relax_global_dicts =
-        previous_relax_global_dicts;
   }
 
   std::vector<GuardSubtreeEntryToken>* previous{nullptr};
@@ -3575,7 +3464,6 @@ struct GuardSubtreeMemoRecorderScope {
       nullptr};
   bool* previous_actual_partial_supported{nullptr};
   int previous_actual_partial_self_depth{0};
-  bool previous_relax_global_dicts{false};
 };
 
 static void append_guard_subtree_memo_token(
@@ -4629,7 +4517,6 @@ class EQUALS_MATCH : public LeafGuard {
     if (!PySet_CheckExact(value) || !PySet_CheckExact(_value.ptr())) {
       return true;
     }
-    const Py_ssize_t size = PySet_GET_SIZE(_value.ptr());
     append_guard_subtree_memo_token(
         tokens,
         GuardSubtreeEntryToken::make_exact_set_equals(
@@ -6085,9 +5972,7 @@ class GuardManager {
       if (C10_UNLIKELY(active_guard_subtree_memo_recorder != nullptr)) {
         append_guard_subtree_memo_token(
             active_guard_subtree_memo_recorder,
-            active_guard_subtree_memo_relax_global_dicts
-                ? GuardSubtreeEntryToken::make_for_source(value, _source)
-                : GuardSubtreeEntryToken::make(value),
+            GuardSubtreeEntryToken::make(value),
             _source);
       }
     }
@@ -10284,7 +10169,6 @@ bool run_root_guard_manager_with_last_success_receipt(
 
   GuardLastSuccessPartialPlanBuild build;
   if (!guard_last_success_prepare_actual_partial(
-          &state->actual_partial,
           f_locals,
           self_framelocals_index,
           tokens,
@@ -10298,21 +10182,7 @@ bool run_root_guard_manager_with_last_success_receipt(
   state->actual_partial.observe_successful_training_pass(
       entry_key,
       root,
-      std::move(build.stability_tokens),
-      std::move(build.hot_tokens),
-      std::move(build.type_proofs),
-      std::move(build.generic_dict_owner_proofs),
-      std::move(build.type_method_owner_proofs),
-      std::move(build.type_method_type_proofs),
-      std::move(build.instance_attr_owner_proofs),
-      std::move(build.instance_attr_type_proofs),
-      std::move(build.instance_attr_dynamic_proofs),
-      std::move(build.static_module_attr_owner_proofs),
-      std::move(build.static_module_attr_type_proofs),
-      std::move(build.static_module_dynamic_attr_proofs),
-      std::move(build.code_accessor_proofs),
-      std::move(build.cross_slice_relations),
-      std::move(build.retained_token_objects));
+      std::move(build));
   return true;
 }
 
