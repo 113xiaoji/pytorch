@@ -14,7 +14,6 @@ void* convert_to_root_guard_manager(py::object root);
 bool run_root_guard_manager(void* root, FrameLocalsMapping* f_locals);
 bool run_root_guard_manager_with_last_success_receipt(
     void* receipt,
-    void* entry_key,
     void* root,
     FrameLocalsMapping* f_locals,
     bool is_skip_guard_eval_unsafe);

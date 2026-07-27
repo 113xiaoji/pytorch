@@ -163,20 +163,17 @@ void lookup(
 
     if (valid) {
       try {
-        if (is_skip_guard_eval_unsafe) {
-          valid = torch::dynamo::run_root_guard_manager_with_last_success_receipt(
-              cache_entry.last_success_receipt,
-              &cache_entry,
-              cache_entry.diff_guard_root_mgr,
-              f_locals,
-              true);
+        void* root = is_skip_guard_eval_unsafe ? cache_entry.diff_guard_root_mgr
+                                               : cache_entry.root_mgr;
+        if (cache_entry.last_success_receipt == nullptr) {
+          valid = torch::dynamo::run_root_guard_manager(root, f_locals);
         } else {
-          valid = torch::dynamo::run_root_guard_manager_with_last_success_receipt(
-              cache_entry.last_success_receipt,
-              &cache_entry,
-              cache_entry.root_mgr,
-              f_locals,
-              false);
+          valid =
+              torch::dynamo::run_root_guard_manager_with_last_success_receipt(
+                  cache_entry.last_success_receipt,
+                  root,
+                  f_locals,
+                  is_skip_guard_eval_unsafe);
         }
       } catch (py::error_already_set& e) {
         if (guard_error_hook) {
