@@ -1610,6 +1610,865 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             check=True,
         )
 
+    def test_actual_partial_refreshes_unrelated_tensor_type_change(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self._cached_tensor = torch.ones(2)
+
+                def forward(self, x):
+                    return self._cached_tensor + x
+
+            model = Model()
+            counter = CompileCounter()
+            compiled = torch.compile(
+                model, backend=counter, fullgraph=True, dynamic=True
+            )
+            x = torch.zeros(2)
+            for _ in range(8):
+                torch.testing.assert_close(compiled(x), torch.ones(2))
+            assert counter.frame_count == 1, counter.frame_count
+
+            torch.Tensor._fastguard_unrelated_type_change = None
+            try:
+                torch.testing.assert_close(compiled(x), torch.ones(2))
+                assert counter.frame_count == 1, counter.frame_count
+            finally:
+                del torch.Tensor._fastguard_unrelated_type_change
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
+    def test_actual_partial_type_proof_fails_closed_on_class_attr(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self._cached_tensor = torch.ones(2)
+
+                def forward(self, x):
+                    return self._cached_tensor + x
+
+            model = Model()
+            counter = CompileCounter()
+            compiled = torch.compile(
+                model, backend=counter, fullgraph=True, dynamic=True
+            )
+            x = torch.zeros(2)
+            for _ in range(8):
+                torch.testing.assert_close(compiled(x), torch.ones(2))
+            assert counter.frame_count == 1, counter.frame_count
+
+            torch.Tensor._dynamo_dynamic_indices = set()
+            try:
+                torch.testing.assert_close(compiled(x), torch.ones(2))
+                assert counter.frame_count == 2, counter.frame_count
+            finally:
+                del torch.Tensor._dynamo_dynamic_indices
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
+    def test_actual_partial_rejects_ordinary_no_hasattr(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            GLOBAL_DICT = {"used": 1, "noise": [0]}
+
+            class Model(torch.nn.Module):
+                def forward(self, x):
+                    if hasattr(self, "scale"):
+                        return x + self.scale + GLOBAL_DICT["used"]
+                    return x + 1 + GLOBAL_DICT["used"]
+
+            model = Model()
+            counter = CompileCounter()
+            compiled = torch.compile(model, backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            for i in range(8):
+                GLOBAL_DICT["noise"] = [i]
+                torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+            assert counter.frame_count == 1, counter.frame_count
+
+            model.scale = torch.full((2,), 5.0)
+            GLOBAL_DICT["noise"] = [100]
+            torch.testing.assert_close(compiled(x), torch.full((2,), 6.0))
+            assert counter.frame_count == 2, counter.frame_count
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
+    def test_actual_partial_custom_getattribute_fails_closed(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.scale = 1.0
+
+                def __getattribute__(self, name):
+                    return object.__getattribute__(self, name)
+
+                def forward(self, x):
+                    return x + self.scale
+
+            model = Model()
+            counter = CompileCounter()
+            compiled = torch.compile(model, backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            for _ in range(8):
+                torch.testing.assert_close(compiled(x), torch.ones(2))
+            assert counter.frame_count == 1, counter.frame_count
+
+            model.scale = 2.0
+            torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+            assert counter.frame_count == 2, counter.frame_count
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+    def test_actual_partial_retains_compiled_self_lifetime(self):
+        script = """
+            import gc
+            import weakref
+
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.scale = torch.ones(2)
+
+                def forward(self, x):
+                    return self.scale + x
+
+            model = Model()
+            model_ref = weakref.ref(model)
+            counter = CompileCounter()
+            compiled = torch.compile(model, backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            for _ in range(8):
+                torch.testing.assert_close(compiled(x), torch.ones(2))
+            assert counter.frame_count == 1, counter.frame_count
+
+            del model
+            gc.collect()
+            assert model_ref() is not None
+            torch.testing.assert_close(compiled(x), torch.ones(2))
+            assert counter.frame_count == 1, counter.frame_count
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
+    def test_actual_partial_static_module_attr_binding_proof(self):
+        script = """
+            import types
+
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            namespace = types.ModuleType("fastguard_test_namespace")
+            namespace.scale = torch.ones(2)
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.namespace = namespace
+
+                def forward(self, x):
+                    return self.namespace.scale + x
+
+            model = Model()
+            counter = CompileCounter()
+            compiled = torch.compile(model, backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            for _ in range(8):
+                torch.testing.assert_close(compiled(x), torch.ones(2))
+            assert counter.frame_count == 1, counter.frame_count
+
+
+            namespace.scale = torch.full((2,), 3.0)
+            torch.testing.assert_close(compiled(x), torch.full((2,), 3.0))
+            assert counter.frame_count == 2, counter.frame_count
+
+            dynamic_values = [torch.ones(2)]
+
+            def module_getattr(name):
+                if name == "dynamic_scale":
+                    return dynamic_values[0]
+                raise AttributeError(name)
+
+            namespace.__getattr__ = module_getattr
+
+            class ModuleGetattrModel(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.namespace = namespace
+
+                def forward(self, x):
+                    return self.namespace.dynamic_scale + x
+
+            module_getattr_counter = CompileCounter()
+            module_getattr_compiled = torch.compile(
+                ModuleGetattrModel(),
+                backend=module_getattr_counter,
+                fullgraph=True,
+            )
+            for _ in range(8):
+                torch.testing.assert_close(
+                    module_getattr_compiled(x), torch.ones(2)
+                )
+
+            dynamic_values[0] = torch.full((2,), 4.0)
+            torch.testing.assert_close(
+                module_getattr_compiled(x), torch.full((2,), 4.0)
+            )
+            assert module_getattr_counter.frame_count == 2, (
+                module_getattr_counter.frame_count
+            )
+
+            class DynamicModule(types.ModuleType):
+                def __getattribute__(self, name):
+                    return super().__getattribute__(name)
+
+            dynamic = DynamicModule("fastguard_dynamic_namespace")
+            dynamic.scale = torch.ones(2)
+
+            class DynamicModel(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.namespace = dynamic
+
+                def forward(self, x):
+                    return self.namespace.scale + x
+
+            dynamic_counter = CompileCounter()
+            dynamic_compiled = torch.compile(
+                DynamicModel(), backend=dynamic_counter, fullgraph=True
+            )
+            for _ in range(8):
+                torch.testing.assert_close(dynamic_compiled(x), torch.ones(2))
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
+    def test_actual_partial_static_type_attr_binding_proof(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+
+            class Namespace:
+                scale = torch.ones(2)
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.namespace = Namespace
+
+                def forward(self, x):
+                    return self.namespace.scale + x
+
+            counter = CompileCounter()
+            compiled = torch.compile(Model(), backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            for _ in range(8):
+                torch.testing.assert_close(compiled(x), torch.ones(2))
+            assert counter.frame_count == 1, counter.frame_count
+
+            Namespace.scale = torch.full((2,), 3.0)
+            torch.testing.assert_close(compiled(x), torch.full((2,), 3.0))
+            assert counter.frame_count == 2, counter.frame_count
+
+            class Descriptor:
+                def __init__(self):
+                    self.value = torch.ones(2)
+
+                def __get__(self, obj, owner):
+                    return self.value
+
+            descriptor = Descriptor()
+
+            class DynamicNamespace:
+                scale = descriptor
+
+            class DynamicModel(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.namespace = DynamicNamespace
+
+                def forward(self, x):
+                    return self.namespace.scale + x
+
+            dynamic_counter = CompileCounter()
+            dynamic_compiled = torch.compile(
+                DynamicModel(), backend=dynamic_counter, fullgraph=True
+            )
+            for _ in range(8):
+                torch.testing.assert_close(dynamic_compiled(x), torch.ones(2))
+
+            descriptor.value = torch.full((2,), 4.0)
+            torch.testing.assert_close(
+                dynamic_compiled(x), torch.full((2,), 4.0)
+            )
+            assert dynamic_counter.frame_count == 2, dynamic_counter.frame_count
+
+            class CustomMeta(type):
+                pass
+
+            class CustomNamespace(metaclass=CustomMeta):
+                scale = torch.ones(2)
+
+            class CustomModel(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.namespace = CustomNamespace
+
+                def forward(self, x):
+                    return self.namespace.scale + x
+
+            custom_counter = CompileCounter()
+            custom_compiled = torch.compile(
+                CustomModel(), backend=custom_counter, fullgraph=True
+            )
+            for _ in range(8):
+                torch.testing.assert_close(custom_compiled(x), torch.ones(2))
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
+    def test_actual_partial_exact_set_equals_token_detects_mutation(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.mode = {1, 2}
+
+                def forward(self, x):
+                    if self.mode == {1, 2}:
+                        return x + 1
+                    return x - 1
+
+            model = Model()
+            counter = CompileCounter()
+            compiled = torch.compile(model, backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            for _ in range(8):
+                torch.testing.assert_close(compiled(x), torch.ones(2))
+            assert counter.frame_count == 1, counter.frame_count
+
+
+            model.mode.add(3)
+            torch.testing.assert_close(compiled(x), torch.full((2,), -1.0))
+            assert counter.frame_count == 2, counter.frame_count
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
+    def test_actual_partial_code_accessor_proof_detects_code_mutation(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            class Model(torch.nn.Module):
+                def helper(self, x):
+                    return x + 1
+
+                def forward(self, x):
+                    return self.helper(x)
+
+            counter = CompileCounter()
+            model = Model()
+            compiled = torch.compile(model, backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            for _ in range(8):
+                torch.testing.assert_close(compiled(x), torch.ones(2))
+            assert counter.frame_count == 1, counter.frame_count
+
+            original_code = Model.helper.__code__
+            try:
+                def replacement(self, x):
+                    return x + 2
+
+                Model.helper.__code__ = replacement.__code__
+                torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+                assert counter.frame_count == 2, counter.frame_count
+            finally:
+                Model.helper.__code__ = original_code
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
+    def test_actual_partial_type_method_binding_proof(self):
+        script = """
+            import types
+
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            GLOBAL_DICT = {"used": 1, "noise": [0]}
+
+            def warm(compiled, x, expected):
+                for i in range(8):
+                    GLOBAL_DICT["noise"] = [i]
+                    torch.testing.assert_close(compiled(x), expected)
+
+            class InstanceShadowModel(torch.nn.Module):
+                def helper(self, x):
+                    return x + 1
+
+                def forward(self, x):
+                    return self.helper(x) + GLOBAL_DICT["used"]
+
+            model = InstanceShadowModel()
+            counter = CompileCounter()
+            compiled = torch.compile(model, backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            warm(compiled, x, torch.full((2,), 2.0))
+
+            def replacement(self, value):
+                return value + 4
+
+            model.helper = types.MethodType(replacement, model)
+            GLOBAL_DICT["noise"] = [100]
+            torch.testing.assert_close(compiled(x), torch.full((2,), 5.0))
+            assert counter.frame_count == 2, counter.frame_count
+
+            class ClassMutationModel(torch.nn.Module):
+                def helper(self, x):
+                    return x + 1
+
+                def forward(self, x):
+                    return self.helper(x) + GLOBAL_DICT["used"]
+
+            class_model = ClassMutationModel()
+            class_counter = CompileCounter()
+            class_compiled = torch.compile(
+                class_model, backend=class_counter, fullgraph=True
+            )
+            warm(class_compiled, x, torch.full((2,), 2.0))
+            original = ClassMutationModel.helper
+            ClassMutationModel.helper = replacement
+            try:
+                GLOBAL_DICT["noise"] = [200]
+                torch.testing.assert_close(
+                    class_compiled(x), torch.full((2,), 5.0)
+                )
+                assert class_counter.frame_count == 2, class_counter.frame_count
+            finally:
+                ClassMutationModel.helper = original
+
+            class RefreshModel(torch.nn.Module):
+                def helper(self, x):
+                    return x + 1
+
+                def forward(self, x):
+                    return self.helper(x) + GLOBAL_DICT["used"]
+
+            refresh_model = RefreshModel()
+            refresh_counter = CompileCounter()
+            refresh_compiled = torch.compile(
+                refresh_model, backend=refresh_counter, fullgraph=True
+            )
+            warm(refresh_compiled, x, torch.full((2,), 2.0))
+            RefreshModel._fastguard_unrelated_type_change = None
+            try:
+                GLOBAL_DICT["noise"] = [300]
+                torch.testing.assert_close(
+                    refresh_compiled(x), torch.full((2,), 2.0)
+                )
+                assert refresh_counter.frame_count == 1, refresh_counter.frame_count
+            finally:
+                del RefreshModel._fastguard_unrelated_type_change
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
+    def test_actual_partial_instance_attr_binding_proof(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            GLOBAL_DICT = {"used": 1, "noise": [0]}
+
+            def warm(compiled, x, expected):
+                for i in range(8):
+                    GLOBAL_DICT["noise"] = [i]
+                    torch.testing.assert_close(compiled(x), expected)
+
+            class InstanceMutationModel(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.scale = torch.ones(2)
+
+                def forward(self, x):
+                    return self.scale + x + GLOBAL_DICT["used"]
+
+            model = InstanceMutationModel()
+            counter = CompileCounter()
+            compiled = torch.compile(model, backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            warm(compiled, x, torch.full((2,), 2.0))
+
+            model.scale = torch.full((2,), 3.0)
+            GLOBAL_DICT["noise"] = [100]
+            torch.testing.assert_close(compiled(x), torch.full((2,), 4.0))
+            assert counter.frame_count == 2, counter.frame_count
+
+            class DescriptorMutationModel(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.scale = torch.ones(2)
+
+                def forward(self, x):
+                    return self.scale + x + GLOBAL_DICT["used"]
+
+            descriptor_model = DescriptorMutationModel()
+            descriptor_counter = CompileCounter()
+            descriptor_compiled = torch.compile(
+                descriptor_model, backend=descriptor_counter, fullgraph=True
+            )
+            warm(descriptor_compiled, x, torch.full((2,), 2.0))
+            DescriptorMutationModel.scale = property(
+                lambda self: torch.full((2,), 5.0)
+            )
+            try:
+                GLOBAL_DICT["noise"] = [200]
+                torch.testing.assert_close(
+                    descriptor_compiled(x), torch.full((2,), 6.0)
+                )
+                assert descriptor_counter.frame_count == 2, (
+                    descriptor_counter.frame_count
+                )
+            finally:
+                del DescriptorMutationModel.scale
+
+            class ShadowValueModel(torch.nn.Module):
+                scale = None
+
+                def __init__(self):
+                    super().__init__()
+                    self.scale = torch.ones(2)
+
+                def forward(self, x):
+                    return self.scale + x + GLOBAL_DICT["used"]
+
+            shadow_model = ShadowValueModel()
+            shadow_counter = CompileCounter()
+            shadow_compiled = torch.compile(
+                shadow_model, backend=shadow_counter, fullgraph=True
+            )
+            warm(shadow_compiled, x, torch.full((2,), 2.0))
+
+            ShadowValueModel.scale = property(
+                lambda self: torch.full((2,), 5.0)
+            )
+            try:
+                GLOBAL_DICT["noise"] = [250]
+                torch.testing.assert_close(
+                    shadow_compiled(x), torch.full((2,), 6.0)
+                )
+                assert shadow_counter.frame_count == 2, shadow_counter.frame_count
+            finally:
+                ShadowValueModel.scale = None
+
+            class InitialScaleDescriptor:
+                def __get__(self, obj, owner):
+                    if obj is None:
+                        return self
+                    return obj._scale
+
+                def __set__(self, obj, value):
+                    obj._scale = value
+
+            initial_scale_descriptor = InitialScaleDescriptor()
+
+            class DynamicDescriptorModel(torch.nn.Module):
+                scale = initial_scale_descriptor
+
+                def __init__(self):
+                    super().__init__()
+                    self._scale = torch.ones(2)
+
+                def forward(self, x):
+                    return self.scale + x + GLOBAL_DICT["used"]
+
+            dynamic_model = DynamicDescriptorModel()
+            dynamic_counter = CompileCounter()
+            dynamic_compiled = torch.compile(
+                dynamic_model, backend=dynamic_counter, fullgraph=True
+            )
+            warm(dynamic_compiled, x, torch.full((2,), 2.0))
+
+            DynamicDescriptorModel.scale = property(
+                lambda self: torch.full((2,), 5.0)
+            )
+            try:
+                GLOBAL_DICT["noise"] = [275]
+                torch.testing.assert_close(
+                    dynamic_compiled(x), torch.full((2,), 6.0)
+                )
+                assert dynamic_counter.frame_count == 2, dynamic_counter.frame_count
+            finally:
+                DynamicDescriptorModel.scale = initial_scale_descriptor
+
+            class RefreshModel(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.scale = torch.ones(2)
+
+                def forward(self, x):
+                    return self.scale + x + GLOBAL_DICT["used"]
+
+            refresh_model = RefreshModel()
+            refresh_counter = CompileCounter()
+            refresh_compiled = torch.compile(
+                refresh_model, backend=refresh_counter, fullgraph=True
+            )
+            warm(refresh_compiled, x, torch.full((2,), 2.0))
+            RefreshModel._fastguard_unrelated_type_change = None
+            try:
+                GLOBAL_DICT["noise"] = [300]
+                torch.testing.assert_close(
+                    refresh_compiled(x), torch.full((2,), 2.0)
+                )
+                assert refresh_counter.frame_count == 1, refresh_counter.frame_count
+            finally:
+                del RefreshModel._fastguard_unrelated_type_change
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
+    def test_actual_partial_clears_dynamic_descriptor_exception(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            GLOBAL_DICT = {"used": 1, "noise": [0]}
+
+            class FlakyDescriptor:
+                def __init__(self):
+                    self.fail_next = False
+
+                def __get__(self, obj, owner):
+                    if obj is None:
+                        return self
+                    if self.fail_next:
+                        self.fail_next = False
+                        raise RuntimeError("transient descriptor failure")
+                    return obj._scale
+
+                def __set__(self, obj, value):
+                    obj._scale = value
+
+            descriptor = FlakyDescriptor()
+
+            class Model(torch.nn.Module):
+                scale = descriptor
+
+                def __init__(self):
+                    super().__init__()
+                    self._scale = torch.ones(2)
+
+                def forward(self, x):
+                    return self.scale + x + GLOBAL_DICT["used"]
+
+            counter = CompileCounter()
+            compiled = torch.compile(Model(), backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            for i in range(8):
+                GLOBAL_DICT["noise"] = [i]
+                torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+            assert counter.frame_count == 1, counter.frame_count
+
+            descriptor.fail_next = True
+            GLOBAL_DICT["noise"] = [100]
+            torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+
+            GLOBAL_DICT["noise"] = [101]
+            torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
+    def test_actual_partial_generic_dict_binding_proof(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            GLOBAL_DICT = {"used": 1, "noise": [0]}
+
+            class Holder:
+                def __init__(self):
+                    self.scale = torch.ones(2)
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.holder = Holder()
+
+                def forward(self, x):
+                    return (
+                        self.holder.__dict__["scale"]
+                        + x
+                        + GLOBAL_DICT["used"]
+                    )
+
+            model = Model()
+            counter = CompileCounter()
+            compiled = torch.compile(model, backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            for i in range(8):
+                GLOBAL_DICT["noise"] = [i]
+                torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+            assert counter.frame_count == 1, counter.frame_count
+
+            model.holder.__dict__ = dict(model.holder.__dict__)
+            GLOBAL_DICT["noise"] = [100]
+            torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
+    def test_actual_partial_misses_on_data_descriptor_install(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            GLOBAL_DICT = {"used": 1, "noise": [0]}
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.scale = torch.ones(2)
+
+                def forward(self, x):
+                    return self.scale + x + GLOBAL_DICT["used"]
+
+            class ScaleDescriptor:
+                def __get__(self, obj, owner):
+                    return torch.full((2,), 5.0)
+
+                def __set__(self, obj, value):
+                    obj.__dict__["scale"] = value
+
+            model = Model()
+            counter = CompileCounter()
+            compiled = torch.compile(model, backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            for i in range(8):
+                GLOBAL_DICT["noise"] = [i]
+                torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+            assert counter.frame_count == 1, counter.frame_count
+
+            Model.scale = ScaleDescriptor()
+            try:
+                GLOBAL_DICT["noise"] = [100]
+                torch.testing.assert_close(compiled(x), torch.full((2,), 6.0))
+                assert counter.frame_count == 2, counter.frame_count
+            finally:
+                del Model.scale
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
 
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests
