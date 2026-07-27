@@ -1742,6 +1742,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
     def test_actual_partial_preserves_tensor_no_hasattr_guard(self):
         script = """
             import torch
+            from torch._dynamo.eval_frame import _debug_get_cache_entry_list
             from torch._dynamo.testing import CompileCounter
 
             GLOBAL_DICT = {"used": 1, "noise": [0]}
@@ -1750,6 +1751,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 def __init__(self):
                     super().__init__()
                     self._cached_tensor = torch.ones(2)
+                    self._cached_tensor.__dict__["safe_marker"] = None
 
                 def forward(self, x):
                     return self._cached_tensor + x + GLOBAL_DICT["used"]
@@ -1766,10 +1768,59 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
             assert counter.frame_count == 1, counter.frame_count
 
+            entries = _debug_get_cache_entry_list(Model.forward.__code__)
+            assert len(entries) == 1, len(entries)
+            assert entries[0]._debug_fast_guard_enabled
+
             model._cached_tensor._dynamo_dynamic_indices = set()
             GLOBAL_DICT["noise"] = [100]
             torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
             assert counter.frame_count == 2, counter.frame_count
+        """
+        self._run_fast_plan_script(script)
+
+    def test_actual_partial_rejects_effectful_tensor_dict_keys(self):
+        script = """
+            import torch
+            from torch._dynamo.eval_frame import _debug_get_cache_entry_list
+            from torch._dynamo.testing import CompileCounter
+
+            GLOBAL_DICT = {"used": 1, "noise": [0]}
+
+            class CollidingKey:
+                calls = 0
+
+                def __hash__(self):
+                    return hash("_dynamo_dynamic_indices")
+
+                def __eq__(self, other):
+                    type(self).calls += 1
+                    return False
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self._cached_tensor = torch.ones(2)
+                    self._cached_tensor.__dict__[CollidingKey()] = None
+
+                def forward(self, x):
+                    return self._cached_tensor + x + GLOBAL_DICT["used"]
+
+            model = Model()
+            counter = CompileCounter()
+            compiled = torch.compile(
+                model, backend=counter, fullgraph=True, dynamic=True
+            )
+            x = torch.zeros(2)
+            for i in range(8):
+                GLOBAL_DICT["noise"] = [i]
+                torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+            assert counter.frame_count == 1, counter.frame_count
+
+            entries = _debug_get_cache_entry_list(Model.forward.__code__)
+            assert len(entries) == 1, len(entries)
+            assert not entries[0]._debug_fast_guard_enabled
+            assert CollidingKey.calls > 0, CollidingKey.calls
         """
         self._run_fast_plan_script(script)
 
