@@ -261,7 +261,7 @@ struct GuardSubtreeTypeMethodOwnerProof {
   }
 };
 
-struct GuardSubtreeTypeMethodBinding {
+struct GuardSubtreeAttrTypeBinding {
   py::object key;
   py::object expected;
 };
@@ -273,13 +273,13 @@ static bool guard_subtree_ensure_type_version(
 static bool guard_actual_partial_uses_default_getattribute(
     PyTypeObject* type);
 
-struct GuardSubtreeTypeMethodTypeProof {
+struct GuardSubtreeAttrTypeProof {
   py::object type;
   getattrfunc getattr{nullptr};
   getattrofunc getattro{nullptr};
   unsigned int version{0};
   bool require_default_getattribute{false};
-  std::vector<GuardSubtreeTypeMethodBinding> bindings;
+  std::vector<GuardSubtreeAttrTypeBinding> bindings;
 
   bool matches_or_refreshes_current() {
     auto* current_type = reinterpret_cast<PyTypeObject*>(type.ptr());
@@ -294,11 +294,11 @@ struct GuardSubtreeTypeMethodTypeProof {
       PyErr_Clear();
       return false;
     }
-    // A type version covers every recorded method key. Re-read the individual
+    // A type version covers every recorded attribute key. Re-read individual
     // bindings only after unrelated class mutation invalidates that version.
     for (const auto& binding : bindings) {
-      if (_PyType_Lookup(current_type, binding.key.ptr()) !=
-          binding.expected.ptr()) {
+      PyObject* current = _PyType_Lookup(current_type, binding.key.ptr());
+      if (current != binding.expected.ptr() || PyErr_Occurred()) {
         PyErr_Clear();
         return false;
       }
@@ -331,52 +331,6 @@ struct GuardSubtreeInstanceAttrOwnerProof {
     return dictptr != nullptr && *dictptr == dict.ptr() &&
         PyDict_CheckExact(*dictptr) &&
         PyDict_GetItem(*dictptr, key.ptr()) == expected.ptr();
-  }
-};
-
-struct GuardSubtreeInstanceAttrTypeBinding {
-  py::object key;
-  py::object expected;
-};
-
-struct GuardSubtreeInstanceAttrTypeProof {
-  py::object type;
-  getattrfunc getattr{nullptr};
-  getattrofunc getattro{nullptr};
-  unsigned int version{0};
-  bool require_default_getattribute{false};
-  std::vector<GuardSubtreeInstanceAttrTypeBinding> bindings;
-
-  bool matches_or_refreshes_current() {
-    auto* current_type = reinterpret_cast<PyTypeObject*>(type.ptr());
-    if (guard_subtree_type_version_is_valid(current_type) &&
-        current_type->tp_version_tag == version) {
-      return true;
-    }
-    if (current_type == nullptr || current_type->tp_getattr != getattr ||
-        current_type->tp_getattro != getattro || bindings.empty() ||
-        (require_default_getattribute &&
-         !guard_actual_partial_uses_default_getattribute(current_type))) {
-      PyErr_Clear();
-      return false;
-    }
-    for (const auto& binding : bindings) {
-      if (_PyType_Lookup(current_type, binding.key.ptr()) !=
-          binding.expected.ptr()) {
-        return false;
-      }
-      if (PyErr_Occurred()) {
-        PyErr_Clear();
-        return false;
-      }
-    }
-    if (!guard_subtree_ensure_type_version(
-            current_type, bindings.front().key.ptr())) {
-      PyErr_Clear();
-      return false;
-    }
-    version = current_type->tp_version_tag;
-    return true;
   }
 };
 
@@ -2005,31 +1959,19 @@ static void guard_last_success_fold_generic_dict_proofs(
     proven_dicts.insert(proof.dict.ptr());
   }
 
-  type_method_owner_proofs.erase(
-      std::remove_if(
-          type_method_owner_proofs.begin(),
-          type_method_owner_proofs.end(),
-          [&proven_owners](const GuardSubtreeTypeMethodOwnerProof& proof) {
-            return proven_owners.find(proof.owner_ptr) != proven_owners.end();
-          }),
-      type_method_owner_proofs.end());
-  instance_attr_owner_proofs.erase(
-      std::remove_if(
-          instance_attr_owner_proofs.begin(),
-          instance_attr_owner_proofs.end(),
-          [&proven_owners](const GuardSubtreeInstanceAttrOwnerProof& proof) {
-            return proven_owners.find(proof.owner_ptr) != proven_owners.end();
-          }),
-      instance_attr_owner_proofs.end());
-  static_module_attr_owner_proofs.erase(
-      std::remove_if(
-          static_module_attr_owner_proofs.begin(),
-          static_module_attr_owner_proofs.end(),
-          [&proven_owners](
-              const GuardSubtreeKnownStaticAttrOwnerProof& proof) {
-            return proven_owners.find(proof.owner_ptr) != proven_owners.end();
-          }),
-      static_module_attr_owner_proofs.end());
+  auto erase_proven_owners = [&proven_owners](auto& proofs) {
+    proofs.erase(
+        std::remove_if(
+            proofs.begin(),
+            proofs.end(),
+            [&proven_owners](const auto& proof) {
+              return proven_owners.find(proof.owner_ptr) != proven_owners.end();
+            }),
+        proofs.end());
+  };
+  erase_proven_owners(type_method_owner_proofs);
+  erase_proven_owners(instance_attr_owner_proofs);
+  erase_proven_owners(static_module_attr_owner_proofs);
   hot_tokens.erase(
       std::remove_if(
           hot_tokens.begin(),
@@ -2039,14 +1981,13 @@ static void guard_last_success_fold_generic_dict_proofs(
                 proven_dicts.find(token.object) != proven_dicts.end();
           }),
       hot_tokens.end());
-
 }
 
 static bool guard_last_success_build_type_method_proofs(
     const std::vector<GuardActualPartialAccessorRecord>& records,
     PyObject* current_self,
     std::vector<GuardSubtreeTypeMethodOwnerProof>& owner_proofs,
-    std::vector<GuardSubtreeTypeMethodTypeProof>& type_proofs) {
+    std::vector<GuardSubtreeAttrTypeProof>& type_proofs) {
   owner_proofs.clear();
   type_proofs.clear();
   for (const auto& record : records) {
@@ -2095,7 +2036,7 @@ static bool guard_last_success_build_type_method_proofs(
       owner_proofs.push_back(std::move(proof));
     }
 
-    GuardSubtreeTypeMethodTypeProof* type_proof = nullptr;
+    GuardSubtreeAttrTypeProof* type_proof = nullptr;
     for (auto& proof : type_proofs) {
       if (proof.type.ptr() ==
           reinterpret_cast<PyObject*>(record.owner_type)) {
@@ -2104,7 +2045,7 @@ static bool guard_last_success_build_type_method_proofs(
       }
     }
     if (type_proof == nullptr) {
-      GuardSubtreeTypeMethodTypeProof proof;
+      GuardSubtreeAttrTypeProof proof;
       proof.type = py::reinterpret_borrow<py::object>(
           reinterpret_cast<PyObject*>(record.owner_type));
       proof.getattr = record.owner_type->tp_getattr;
@@ -2126,7 +2067,7 @@ static bool guard_last_success_build_type_method_proofs(
       }
     }
     if (!binding_seen) {
-      GuardSubtreeTypeMethodBinding binding;
+      GuardSubtreeAttrTypeBinding binding;
       binding.key = record.key;
       binding.expected = record.resolved;
       type_proof->bindings.push_back(std::move(binding));
@@ -2139,7 +2080,7 @@ static bool guard_last_success_build_instance_attr_proofs(
     const std::vector<GuardActualPartialAccessorRecord>& records,
     PyObject* current_self,
     std::vector<GuardSubtreeInstanceAttrOwnerProof>& owner_proofs,
-    std::vector<GuardSubtreeInstanceAttrTypeProof>& type_proofs) {
+    std::vector<GuardSubtreeAttrTypeProof>& type_proofs) {
   owner_proofs.clear();
   type_proofs.clear();
   for (const auto& record : records) {
@@ -2202,7 +2143,7 @@ static bool guard_last_success_build_instance_attr_proofs(
       owner_proofs.push_back(std::move(proof));
     }
 
-    GuardSubtreeInstanceAttrTypeProof* type_proof = nullptr;
+    GuardSubtreeAttrTypeProof* type_proof = nullptr;
     for (auto& proof : type_proofs) {
       if (proof.type.ptr() ==
           reinterpret_cast<PyObject*>(record.owner_type)) {
@@ -2211,7 +2152,7 @@ static bool guard_last_success_build_instance_attr_proofs(
       }
     }
     if (type_proof == nullptr) {
-      GuardSubtreeInstanceAttrTypeProof proof;
+      GuardSubtreeAttrTypeProof proof;
       proof.type = py::reinterpret_borrow<py::object>(
           reinterpret_cast<PyObject*>(record.owner_type));
       proof.getattr = record.owner_type->tp_getattr;
@@ -2233,7 +2174,7 @@ static bool guard_last_success_build_instance_attr_proofs(
       }
     }
     if (!binding_seen) {
-      GuardSubtreeInstanceAttrTypeBinding binding;
+      GuardSubtreeAttrTypeBinding binding;
       binding.key = record.key;
       if (expected_type_attr != nullptr) {
         binding.expected = record.type_attr;
@@ -2565,26 +2506,6 @@ struct GuardLastSuccessPartialPlanHeader {
 };
 
 struct GuardLastSuccessPartialPlanPayload {
-  void clear() {
-    self_weakref = py::object();
-    self_type = nullptr;
-    self_framelocals_index = -1;
-    tokens.clear();
-    type_proofs.clear();
-    generic_dict_owner_proofs.clear();
-    type_method_owner_proofs.clear();
-    type_method_type_proofs.clear();
-    instance_attr_owner_proofs.clear();
-    instance_attr_type_proofs.clear();
-    instance_attr_dynamic_proofs.clear();
-    static_module_attr_owner_proofs.clear();
-    static_module_attr_type_proofs.clear();
-    static_module_dynamic_attr_proofs.clear();
-    code_accessor_proofs.clear();
-    cross_slice_relations.clear();
-    retained_token_objects.clear();
-  }
-
   py::object self_weakref;
   PyTypeObject* self_type{nullptr};
   int self_framelocals_index{-1};
@@ -2592,9 +2513,9 @@ struct GuardLastSuccessPartialPlanPayload {
   std::vector<GuardSubtreeTypeProof> type_proofs;
   std::vector<GuardSubtreeGenericDictOwnerProof> generic_dict_owner_proofs;
   std::vector<GuardSubtreeTypeMethodOwnerProof> type_method_owner_proofs;
-  std::vector<GuardSubtreeTypeMethodTypeProof> type_method_type_proofs;
+  std::vector<GuardSubtreeAttrTypeProof> type_method_type_proofs;
   std::vector<GuardSubtreeInstanceAttrOwnerProof> instance_attr_owner_proofs;
-  std::vector<GuardSubtreeInstanceAttrTypeProof> instance_attr_type_proofs;
+  std::vector<GuardSubtreeAttrTypeProof> instance_attr_type_proofs;
   std::vector<GuardSubtreeInstanceAttrDynamicProof>
       instance_attr_dynamic_proofs;
   std::vector<GuardSubtreeKnownStaticAttrOwnerProof>
@@ -2617,14 +2538,7 @@ struct GuardLastSuccessPartialPlan
     : GuardLastSuccessPartialPlanHeader,
       GuardLastSuccessPartialPlanPayload {
   void reset() {
-    state = GuardLastSuccessPartialPlanState::Empty;
-    entry_key = nullptr;
-    root_key = nullptr;
-
-    stable_passes = 0;
-    unstable_passes = 0;
-    stability_tokens.clear();
-    GuardLastSuccessPartialPlanPayload::clear();
+    *this = GuardLastSuccessPartialPlan{};
   }
 
   void disable() {
@@ -2658,8 +2572,7 @@ struct GuardLastSuccessPartialPlan
     } else {
       if (has_training_signature) {
         unstable_passes += 1;
-        if (unstable_passes >=
-            kGuardLastSuccessActualMaxUnstablePasses) {
+        if (unstable_passes >= kGuardLastSuccessActualMaxUnstablePasses) {
           disable();
           return;
         }
@@ -2680,14 +2593,6 @@ struct GuardLastSuccessPartialPlan
       unstable_passes = 0;
     }
   }
-};
-
-struct GuardLastSuccessReceipt {
-  void reset() {
-    actual_partial.reset();
-  }
-
-  GuardLastSuccessPartialPlan actual_partial;
 };
 
 static bool guard_subtree_exact_list_token_matches_current(
@@ -9895,28 +9800,26 @@ void* create_guard_last_success_receipt() {
   if (!guard_fast_plan_enabled()) {
     return nullptr;
   }
-  return new GuardLastSuccessReceipt();
+  return new GuardLastSuccessPartialPlan();
 }
 
 void destroy_guard_last_success_receipt(void* receipt) {
-  delete static_cast<GuardLastSuccessReceipt*>(receipt);
+  delete static_cast<GuardLastSuccessPartialPlan*>(receipt);
 }
 
 void reset_guard_last_success_receipt(void* receipt) {
   if (receipt == nullptr) {
     return;
   }
-  static_cast<GuardLastSuccessReceipt*>(receipt)->reset();
+  static_cast<GuardLastSuccessPartialPlan*>(receipt)->reset();
 }
 
 bool is_guard_last_success_receipt_enabled(void* receipt) {
   if (receipt == nullptr) {
     return false;
   }
-  const auto* state =
-      static_cast<const GuardLastSuccessReceipt*>(receipt);
-  return state->actual_partial.state ==
-      GuardLastSuccessPartialPlanState::Enabled;
+  const auto* plan = static_cast<const GuardLastSuccessPartialPlan*>(receipt);
+  return plan->state == GuardLastSuccessPartialPlanState::Enabled;
 }
 
 bool run_root_guard_manager_with_last_success_receipt(
@@ -9926,20 +9829,19 @@ bool run_root_guard_manager_with_last_success_receipt(
     FrameLocalsMapping* f_locals,
     bool is_skip_guard_eval_unsafe) {
   TORCH_INTERNAL_ASSERT_DEBUG_ONLY(receipt != nullptr);
-  GuardLastSuccessReceipt* state =
-      static_cast<GuardLastSuccessReceipt*>(receipt);
+  auto* plan = static_cast<GuardLastSuccessPartialPlan*>(receipt);
   if (is_skip_guard_eval_unsafe || root == nullptr) {
-    state->reset();
+    plan->reset();
     return run_root_guard_manager(root, f_locals);
   }
 
   RootGuardManager* root_mgr = static_cast<RootGuardManager*>(root);
   static const std::string self_source = "L['self']";
 
-  if (state->actual_partial.is_enabled_for(entry_key, root)) {
+  if (plan->is_enabled_for(entry_key, root)) {
     bool token_miss = false;
     const bool result = root_mgr->check_nopybind_actual_partial(
-        f_locals, self_source, state->actual_partial, token_miss);
+        f_locals, self_source, *plan, token_miss);
     if (!token_miss) {
       return result;
     }
@@ -9948,14 +9850,14 @@ bool run_root_guard_manager_with_last_success_receipt(
     // the full guard.
   }
 
-  if (!state->actual_partial.should_train()) {
+  if (!plan->should_train()) {
     return run_root_guard_manager(root, f_locals);
   }
 
   int self_framelocals_index = -1;
   if (!root_mgr->supports_accessor_subtree_memo_recursive(
           self_source, &self_framelocals_index)) {
-    state->actual_partial.disable();
+    plan->disable();
     return run_root_guard_manager(root, f_locals);
   }
 
@@ -9979,13 +9881,13 @@ bool run_root_guard_manager_with_last_success_receipt(
     }
   }
   if (!actual_partial_supported) {
-    state->actual_partial.disable();
+    plan->disable();
     return true;
   }
 
   if (tokens.empty() || debug_paths.size() != tokens.size() ||
       tokens.size() > kGuardLastSuccessActualMaxTokens) {
-    state->actual_partial.disable();
+    plan->disable();
     return true;
   }
 
@@ -9997,14 +9899,11 @@ bool run_root_guard_manager_with_last_success_receipt(
           debug_paths,
           accessor_records,
           build)) {
-    state->actual_partial.disable();
+    plan->disable();
     return true;
   }
 
-  state->actual_partial.observe_successful_training_pass(
-      entry_key,
-      root,
-      std::move(build));
+  plan->observe_successful_training_pass(entry_key, root, std::move(build));
   return true;
 }
 
