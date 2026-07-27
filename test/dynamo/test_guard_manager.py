@@ -1844,6 +1844,49 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
         """
         self._run_fast_plan_script(script)
 
+    def test_actual_partial_detects_dynamic_getattribute_install(self):
+        script = """
+            import torch
+            from torch._dynamo.eval_frame import _debug_get_cache_entry_list
+            from torch._dynamo.testing import CompileCounter
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.scale = 1.0
+
+                def __getattr__(self, name):
+                    return super().__getattr__(name)
+
+                def forward(self, x):
+                    return x + self.scale
+
+            model = Model()
+            counter = CompileCounter()
+            compiled = torch.compile(model, backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            for _ in range(8):
+                torch.testing.assert_close(compiled(x), torch.ones(2))
+            assert counter.frame_count == 1, counter.frame_count
+
+            entries = _debug_get_cache_entry_list(Model.forward.__code__)
+            assert len(entries) == 1, len(entries)
+            assert entries[0]._debug_fast_guard_enabled
+
+            def custom_getattribute(self, name):
+                if name == "scale":
+                    return 5.0
+                return object.__getattribute__(self, name)
+
+            Model.__getattribute__ = custom_getattribute
+            try:
+                torch.testing.assert_close(compiled(x), torch.full((2,), 5.0))
+                assert counter.frame_count == 2, counter.frame_count
+            finally:
+                del Model.__getattribute__
+        """
+        self._run_fast_plan_script(script)
+
     def test_actual_partial_retains_compiled_self_lifetime(self):
         script = """
             import gc
@@ -2353,20 +2396,23 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
         """
         self._run_fast_plan_script(script)
 
-    def test_actual_partial_clears_dynamic_descriptor_exception(self):
+    def test_actual_partial_does_not_retry_dynamic_descriptor_exception(self):
         script = """
             import torch
+            from torch._dynamo.eval_frame import _debug_get_cache_entry_list
             from torch._dynamo.testing import CompileCounter
 
             GLOBAL_DICT = {"used": 1, "noise": [0]}
 
             class FlakyDescriptor:
                 def __init__(self):
+                    self.call_count = 0
                     self.fail_next = False
 
                 def __get__(self, obj, owner):
                     if obj is None:
                         return self
+                    self.call_count += 1
                     if self.fail_next:
                         self.fail_next = False
                         raise RuntimeError("transient descriptor failure")
@@ -2395,12 +2441,101 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                 torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
             assert counter.frame_count == 1, counter.frame_count
 
+            entries = _debug_get_cache_entry_list(Model.forward.__code__)
+            assert len(entries) == 1, len(entries)
+            assert entries[0]._debug_fast_guard_enabled
+
+            descriptor.call_count = 0
             descriptor.fail_next = True
             GLOBAL_DICT["noise"] = [100]
             torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+            assert descriptor.call_count >= 2, descriptor.call_count
+            assert counter.frame_count == 2, counter.frame_count
 
             GLOBAL_DICT["noise"] = [101]
             torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+        """
+        self._run_fast_plan_script(script)
+
+    def test_actual_partial_uses_guard_torch_function_state(self):
+        script = """
+            import torch
+            from torch._dynamo.eval_frame import _debug_get_cache_entry_list
+            from torch._dynamo.testing import CompileCounter
+
+            GLOBAL_DICT = {"used": 1, "noise": [0]}
+
+            class ModeRecordingDescriptor:
+                def __init__(self):
+                    self.states = []
+
+                def __get__(self, obj, owner):
+                    if obj is None:
+                        return self
+                    self.states.append(
+                        torch._C._is_torch_function_all_disabled()
+                    )
+                    return obj._scale
+
+                def __set__(self, obj, value):
+                    obj._scale = value
+
+            descriptor = ModeRecordingDescriptor()
+
+            class Model(torch.nn.Module):
+                scale = descriptor
+
+                def __init__(self):
+                    super().__init__()
+                    self._scale = torch.ones(2)
+
+                def forward(self, x):
+                    return self.scale + x + GLOBAL_DICT["used"]
+
+            counter = CompileCounter()
+            compiled = torch.compile(Model(), backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            for i in range(8):
+                GLOBAL_DICT["noise"] = [i]
+                torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+            assert counter.frame_count == 1, counter.frame_count
+
+            entries = _debug_get_cache_entry_list(Model.forward.__code__)
+            assert len(entries) == 1, len(entries)
+            assert entries[0]._debug_fast_guard_enabled
+
+            descriptor.states.clear()
+            GLOBAL_DICT["noise"] = [100]
+            torch.testing.assert_close(compiled(x), torch.full((2,), 2.0))
+            assert descriptor.states, descriptor.states
+            assert descriptor.states[0] is True, descriptor.states
+        """
+        self._run_fast_plan_script(script)
+
+    def test_actual_partial_rejects_oversized_list_snapshot(self):
+        script = """
+            import torch
+            from torch._dynamo.eval_frame import _debug_get_cache_entry_list
+            from torch._dynamo.testing import CompileCounter
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.values = [1.0] * 65537
+
+                def forward(self, x):
+                    return x + self.values[0]
+
+            counter = CompileCounter()
+            compiled = torch.compile(Model(), backend=counter, fullgraph=True)
+            x = torch.zeros(2)
+            for _ in range(4):
+                torch.testing.assert_close(compiled(x), torch.ones(2))
+            assert counter.frame_count == 1, counter.frame_count
+
+            entries = _debug_get_cache_entry_list(Model.forward.__code__)
+            assert len(entries) == 1, len(entries)
+            assert not entries[0]._debug_fast_guard_enabled
         """
         self._run_fast_plan_script(script)
 
