@@ -578,6 +578,52 @@ num_guards_executed=0)
         self.assertTrue(guards_manager.check(foo))
         self.assertFalse(guards_manager.check({"a": 1, "b": 3}))
 
+    @torch._dynamo.config.patch(skip_tensor_guards_with_matching_dict_tags=True)
+    def test_dict_tag_does_not_skip_relational_guards(self):
+        a = torch.randn(3, 4)
+        b = torch.randn(3, 4)
+        tensor_dict = {"tensor": a}
+
+        alias_root = RootGuardManager()
+        alias_dict_manager = alias_root.list_getitem_manager(
+            0, "", tensor_dict, default_mgr_enum
+        )
+        alias_dict_tensor_manager = alias_dict_manager.dict_getitem_manager(
+            "tensor", "", a, default_mgr_enum
+        )
+        alias_peer_manager = alias_root.list_getitem_manager(
+            1, "", a, default_mgr_enum
+        )
+        install_object_aliasing_guard(
+            alias_dict_tensor_manager,
+            alias_peer_manager,
+            ["tensor_dict['tensor'] is peer"],
+        )
+
+        self.assertTrue(alias_root.check([tensor_dict, a]))
+        self.assertFalse(alias_root.check([tensor_dict, b]))
+
+        no_alias_root = RootGuardManager()
+        no_alias_dict_manager = no_alias_root.list_getitem_manager(
+            0, "", tensor_dict, default_mgr_enum
+        )
+        no_alias_dict_tensor_manager = (
+            no_alias_dict_manager.dict_getitem_manager(
+                "tensor", "", a, default_mgr_enum
+            )
+        )
+        no_alias_peer_manager = no_alias_root.list_getitem_manager(
+            1, "", b, default_mgr_enum
+        )
+        install_no_tensor_aliasing_guard(
+            [no_alias_dict_tensor_manager, no_alias_peer_manager],
+            ["tensor_dict['tensor']", "peer"],
+            ["tensor_dict['tensor'] is not peer"],
+        )
+
+        self.assertTrue(no_alias_root.check([tensor_dict, b]))
+        self.assertFalse(no_alias_root.check([tensor_dict, a]))
+
     def test_globals(self):
         global global_pair, Pair
         guard_manager = RootGuardManager()
@@ -1468,6 +1514,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
         script = """
             import torch
             from torch._dynamo.testing import CompileCounter
+            from torch._dynamo.eval_frame import _debug_get_cache_entry_list
 
             GLOBAL_DICT = {"used": 1, "noise": [0]}
 
@@ -1492,6 +1539,12 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                         compiled(x), torch.full_like(x, 2.0)
                     )
             assert counter.frame_count == 2, counter.frame_count
+            cache_entries = _debug_get_cache_entry_list(Model.forward.__code__)
+            assert len(cache_entries) == 2, len(cache_entries)
+            assert all(
+                entry._debug_fast_guard_enabled for entry in cache_entries
+            ), [entry._debug_fast_guard_enabled for entry in cache_entries]
+            original_entries = cache_entries
 
             model.mode = 5
             for i, x in enumerate(inputs):
@@ -1500,6 +1553,9 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                     compiled(x), torch.full_like(x, 6.0)
                 )
             assert counter.frame_count == 4, counter.frame_count
+            assert all(
+                entry._debug_fast_guard_enabled for entry in original_entries
+            ), [entry._debug_fast_guard_enabled for entry in original_entries]
         """
         env = os.environ.copy()
         env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
@@ -1558,6 +1614,85 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             torch.testing.assert_close(
                 distinct(distinct_model.value), torch.full((2,), 3.0)
             )
+            assert distinct_counter.frame_count == 2, distinct_counter.frame_count
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
+
+    def test_actual_partial_preserves_dict_tagged_alias_relations(self):
+        script = """
+            import torch
+            from torch._dynamo.eval_frame import _debug_get_cache_entry_list
+            from torch._dynamo.testing import CompileCounter
+
+            torch._dynamo.config.skip_tensor_guards_with_matching_dict_tags = True
+            torch._dynamo.config.use_recursive_dict_tags_for_guards = False
+            torch._dynamo.config.use_lamba_guard_for_object_aliasing = False
+            torch._dynamo.config.skip_no_tensor_aliasing_guards_on_parameters = False
+
+            ALIAS_DICT = {}
+
+            class AliasedModel(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.register_buffer("value", torch.ones(2))
+                    ALIAS_DICT["peer"] = self.value
+
+                def forward(self):
+                    if self.value is ALIAS_DICT["peer"]:
+                        return self.value + 2
+                    return self.value - 2
+
+            aliased_model = AliasedModel()
+            aliased_counter = CompileCounter()
+            aliased = torch.compile(
+                aliased_model, backend=aliased_counter, fullgraph=True
+            )
+            for _ in range(8):
+                torch.testing.assert_close(aliased(), torch.full((2,), 3.0))
+            aliased_entries = _debug_get_cache_entry_list(
+                AliasedModel.forward.__code__
+            )
+            assert len(aliased_entries) == 1, len(aliased_entries)
+            assert aliased_entries[0]._debug_fast_guard_enabled
+
+            aliased_model.value = torch.zeros(2)
+            torch.testing.assert_close(aliased(), torch.full((2,), -2.0))
+            assert aliased_counter.frame_count == 2, aliased_counter.frame_count
+
+            NO_ALIAS_DICT = {"peer": torch.full((2,), 2.0)}
+
+            class DistinctModel(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.register_buffer("value", torch.ones(2))
+
+                def forward(self):
+                    if self.value is NO_ALIAS_DICT["peer"]:
+                        return self.value + 2
+                    return self.value - 2
+
+            distinct_model = DistinctModel()
+            distinct_counter = CompileCounter()
+            distinct = torch.compile(
+                distinct_model, backend=distinct_counter, fullgraph=True
+            )
+            for _ in range(8):
+                torch.testing.assert_close(distinct(), torch.full((2,), -1.0))
+            distinct_entries = _debug_get_cache_entry_list(
+                DistinctModel.forward.__code__
+            )
+            assert len(distinct_entries) == 1, len(distinct_entries)
+            assert distinct_entries[0]._debug_fast_guard_enabled
+
+            distinct_model.value = NO_ALIAS_DICT["peer"]
+            torch.testing.assert_close(distinct(), torch.full((2,), 4.0))
             assert distinct_counter.frame_count == 2, distinct_counter.frame_count
         """
         env = os.environ.copy()
