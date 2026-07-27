@@ -1720,11 +1720,15 @@ static void guard_last_success_make_partial_hot_tokens(
   hot_tokens.clear();
   hot_tokens.reserve(tokens.size());
   for (size_t i = 0; i < tokens.size(); ++i) {
-    if ((i != 0 && tokens[i].kind == GuardSubtreeProbeTokenKind::ObjectOnly) ||
-        guard_subtree_token_is_aliasing_guard(tokens[i].kind)) {
+    const auto& token = tokens[i];
+    if ((i != 0 && token.kind == GuardSubtreeProbeTokenKind::ObjectOnly) ||
+        token.kind == GuardSubtreeProbeTokenKind::BoundMethod ||
+        token.kind == GuardSubtreeProbeTokenKind::ExactTuple ||
+        guard_subtree_token_is_aliasing_guard(token.kind)) {
+      // Binding proofs cover bound methods, and retained exact tuples cannot
+      // change after the stability signature is recorded.
       continue;
     }
-    const auto& token = tokens[i];
     if (token.kind == GuardSubtreeProbeTokenKind::TensorNoHasAttr &&
         !hot_tokens.empty()) {
       auto& tensor_token = hot_tokens.back();
@@ -2543,17 +2547,6 @@ static bool guard_last_success_build_partial_plan_tokens(
   return true;
 }
 
-static bool guard_subtree_bound_method_token_matches_current(
-    const GuardSubtreeEntryToken& token) {
-  if (token.type == nullptr) {
-    return false;
-  }
-  if (token.bound_method_func != nullptr) {
-    return token.bound_method_self != nullptr;
-  }
-  return token.bound_c_method_func != nullptr;
-}
-
 enum class GuardLastSuccessPartialPlanState : uint8_t {
   Empty,
   Training,
@@ -2765,12 +2758,6 @@ static bool guard_subtree_memo_tokens_match(
       }
       continue;
     }
-    if (token.kind == GuardSubtreeProbeTokenKind::BoundMethod) {
-      if (!guard_subtree_bound_method_token_matches_current(token)) {
-        return false;
-      }
-      continue;
-    }
     PyObject* current_object = i == 0 ? root_value : token.object;
     if (token.kind == GuardSubtreeProbeTokenKind::ObjectOnly) {
       if (current_object != token.object ||
@@ -2792,15 +2779,6 @@ static bool guard_subtree_memo_tokens_match(
     if (token.kind == GuardSubtreeProbeTokenKind::ExactList) {
       if (!guard_subtree_exact_list_token_matches_current(
               token, current_object)) {
-        return false;
-      }
-      continue;
-    }
-    if (token.kind == GuardSubtreeProbeTokenKind::ExactTuple) {
-      if (current_object != token.object ||
-          !PyTuple_CheckExact(current_object) ||
-          Py_TYPE(current_object) != token.type ||
-          PyTuple_GET_SIZE(current_object) != token.size) {
         return false;
       }
       continue;
@@ -6624,10 +6602,11 @@ class RootGuardManager : public GuardManager {
       bool* actual_partial_token_miss = nullptr) { // borrowed ref
     // Check [Note on GIL interaction with mutex lock] for details on why we
     // need mutex and its interactions with GIL.
-    PyThreadState* _save = nullptr;
-    Py_UNBLOCK_THREADS; // ; is added to avoid clang-formatting
-    std::lock_guard<std::mutex> lock_guard(_lock);
-    Py_BLOCK_THREADS; // ; is added to avoid clang-formatting
+    std::unique_lock<std::mutex> lock_guard(_lock, std::defer_lock);
+    if (C10_UNLIKELY(!lock_guard.try_lock())) {
+      py::gil_scoped_release release;
+      lock_guard.lock();
+    }
     auto relational_guard_state_reset =
         c10::make_scope_exit([this]() { _reset_relational_guard_state(); });
 
@@ -6937,9 +6916,9 @@ class RootGuardManager : public GuardManager {
   // instructions). Thread 2 here can decide to release the GIL. Thread 1 can
   // acquire GIL and reach the mutex, where it will wait forever.
   //
-  // To avoid this, each thread releases the GIL before acquiring the mutex and
-  // then acquires the GIL again after acquiring the mutex lock by using
-  // Py_BLOCK_THREADS and Py_UNBLOCK_THREADS. This avoids the deadlock.
+  // To avoid this, checks never block on the mutex while holding the GIL. The
+  // fast check first tries the uncontended lock while holding the GIL and only
+  // releases it before a blocking lock; verbose checks release it eagerly.
   std::mutex _lock;
 
   // We init LocalState only when this flag it set. This flag is set during
@@ -9946,10 +9925,7 @@ bool run_root_guard_manager_with_last_success_receipt(
     void* root,
     FrameLocalsMapping* f_locals,
     bool is_skip_guard_eval_unsafe) {
-  if (!guard_fast_plan_enabled() || receipt == nullptr) {
-    return run_root_guard_manager(root, f_locals);
-  }
-
+  TORCH_INTERNAL_ASSERT_DEBUG_ONLY(receipt != nullptr);
   GuardLastSuccessReceipt* state =
       static_cast<GuardLastSuccessReceipt*>(receipt);
   if (is_skip_guard_eval_unsafe || root == nullptr) {

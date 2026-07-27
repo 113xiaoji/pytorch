@@ -1,5 +1,5 @@
 #pragma once
-#include <c10/core/GradMode.h>
+#include <c10/core/impl/LocalDispatchKeySet.h>
 #include <torch/csrc/dynamo/framelocals_mapping.h>
 #include <torch/csrc/python_headers.h>
 #include <torch/csrc/utils/pybind.h>
@@ -38,7 +38,6 @@ struct LocalState {
   // TLS state that changes operators
   c10::impl::LocalDispatchKeySet dispatch_modifier;
   c10::DispatchKeySet override_dispatch_key_set;
-  bool grad_mode_enabled;
   bool should_mask_python_keys;
 
   at::DispatchKeySet apply(at::DispatchKeySet ks) const {
@@ -62,7 +61,6 @@ struct LocalState {
   LocalState()
       : dispatch_modifier(c10::impl::tls_local_dispatch_key_set()),
         override_dispatch_key_set(c10::BackendComponent::InvalidBit),
-        grad_mode_enabled(at::GradMode::is_enabled()),
         should_mask_python_keys(
             !get_is_in_mode_without_ignore_compile_internals()) {}
 
