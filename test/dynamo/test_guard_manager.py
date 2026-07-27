@@ -1514,6 +1514,58 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
         """
         self._run_fast_plan_script(script)
 
+    def test_actual_partial_preserves_root_special_guards(self):
+        script = """
+            import torch
+            import torch.utils._device as utils_device
+            from torch._dynamo.eval_frame import _debug_get_cache_entry_list
+            from torch._dynamo.testing import CompileCounter
+            from torch.overrides import BaseTorchFunctionMode
+
+            GLOBAL_DICT = {"used": 1, "noise": [0]}
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.bias = 2.0
+
+                def forward(self, x):
+                    return x + self.bias + GLOBAL_DICT["used"]
+
+            counter = CompileCounter()
+            compiled = torch.compile(Model(), backend=counter, fullgraph=True)
+            x = torch.ones(2)
+            expected = torch.full((2,), 4.0)
+            for i in range(8):
+                GLOBAL_DICT["noise"] = [i]
+                torch.testing.assert_close(compiled(x), expected)
+            assert counter.frame_count == 1, counter.frame_count
+
+            entries = _debug_get_cache_entry_list(Model.forward.__code__)
+            assert len(entries) == 1, len(entries)
+            assert entries[0]._debug_fast_guard_enabled
+
+            with torch.no_grad():
+                result = compiled(x)
+            torch.testing.assert_close(result, expected)
+            assert counter.frame_count == 2, counter.frame_count
+
+            previous_device = utils_device.CURRENT_DEVICE
+            try:
+                utils_device.CURRENT_DEVICE = torch.device("cpu")
+                result = compiled(x)
+            finally:
+                utils_device.CURRENT_DEVICE = previous_device
+            torch.testing.assert_close(result, expected)
+            assert counter.frame_count == 3, counter.frame_count
+
+            with BaseTorchFunctionMode():
+                result = compiled(x)
+            torch.testing.assert_close(result, expected)
+            assert counter.frame_count == 4, counter.frame_count
+        """
+        self._run_fast_plan_script(script)
+
     def test_actual_partial_plan_is_per_cache_entry(self):
         script = """
             import torch

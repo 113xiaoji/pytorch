@@ -141,9 +141,6 @@ enum class GuardSubtreeProbeTokenKind : uint8_t {
   ExactList,
   ExactTuple,
   TensorMatch,
-  DefaultDevice,
-  GlobalState,
-  TorchFunctionModeStack,
   NoTensorAliasing,
   ObjectAliasing,
   BoundMethod,
@@ -1318,8 +1315,6 @@ static bool default_device_matches(
   return result == 1;
 }
 
-static bool torch_function_mode_stack_guard_matches(const void* guard);
-
 static bool is_global_source_path(const std::string& source) {
   return source == "G" ||
       (source.size() > 1 && source[0] == 'G' &&
@@ -1431,10 +1426,6 @@ struct GuardSubtreeEntryToken {
   std::vector<c10::SymInt> tensor_size_values;
   std::vector<int64_t> tensor_stride_indices;
   std::vector<c10::SymInt> tensor_stride_values;
-  PyObject* default_device_dict{nullptr};
-  PyObject* default_device{nullptr};
-  GlobalStateGuard* global_state_guard{nullptr};
-  const void* torch_function_mode_stack_guard{nullptr};
   const void* no_tensor_aliasing_guard{nullptr};
   const void* object_aliasing_guard{nullptr};
   PyObject* bound_method_self{nullptr};
@@ -1497,7 +1488,7 @@ struct GuardSubtreeEntryToken {
       return false;
     }
 
-    const at::Tensor tensor = THPVariable_Unpack(obj);
+    const at::Tensor& tensor = THPVariable_Unpack(obj);
     if (!tensor_check.check(state, tensor)) {
       return false;
     }
@@ -1540,33 +1531,6 @@ struct GuardSubtreeEntryToken {
       }
     }
     return true;
-  }
-
-  static GuardSubtreeEntryToken make_default_device(
-      PyObject* utils_device_dict,
-      PyObject* device) {
-    GuardSubtreeEntryToken token;
-    token.object = utils_device_dict;
-    token.type = Py_TYPE(utils_device_dict);
-    token.kind = GuardSubtreeProbeTokenKind::DefaultDevice;
-    token.default_device_dict = utils_device_dict;
-    token.default_device = device;
-    return token;
-  }
-
-  static GuardSubtreeEntryToken make_global_state(GlobalStateGuard* guard) {
-    GuardSubtreeEntryToken token;
-    token.kind = GuardSubtreeProbeTokenKind::GlobalState;
-    token.global_state_guard = guard;
-    return token;
-  }
-
-  static GuardSubtreeEntryToken make_torch_function_mode_stack(
-      const void* guard) {
-    GuardSubtreeEntryToken token;
-    token.kind = GuardSubtreeProbeTokenKind::TorchFunctionModeStack;
-    token.torch_function_mode_stack_guard = guard;
-    return token;
   }
 
   static GuardSubtreeEntryToken make_no_tensor_aliasing(
@@ -1628,7 +1592,7 @@ struct GuardSubtreeEntryToken {
       return false;
     }
 
-    const at::Tensor tensor = THPVariable_Unpack(object);
+    const at::Tensor& tensor = THPVariable_Unpack(object);
     if (state->apply(tensor.key_set()).raw_repr() != tensor_dispatch_key) {
       return false;
     }
@@ -1661,14 +1625,6 @@ struct GuardSubtreeEntryToken {
     return true;
   }
 
-  bool matches_default_device_current() const {
-    return default_device_matches(default_device_dict, default_device);
-  }
-
-  bool matches_global_state_current() const {
-    return global_state_guard != nullptr && global_state_guard->check();
-  }
-
   bool matches(const GuardSubtreeEntryToken& other) const {
     if (kind != other.kind || type != other.type) {
       return false;
@@ -1693,17 +1649,6 @@ struct GuardSubtreeEntryToken {
           tensor_size_values == other.tensor_size_values &&
           tensor_stride_indices == other.tensor_stride_indices &&
           tensor_stride_values == other.tensor_stride_values;
-    }
-    if (kind == GuardSubtreeProbeTokenKind::DefaultDevice) {
-      return default_device_dict == other.default_device_dict &&
-          default_device == other.default_device;
-    }
-    if (kind == GuardSubtreeProbeTokenKind::GlobalState) {
-      return global_state_guard == other.global_state_guard;
-    }
-    if (kind == GuardSubtreeProbeTokenKind::TorchFunctionModeStack) {
-      return torch_function_mode_stack_guard ==
-          other.torch_function_mode_stack_guard;
     }
     if (kind == GuardSubtreeProbeTokenKind::NoTensorAliasing) {
       return no_tensor_aliasing_guard == other.no_tensor_aliasing_guard;
@@ -1736,70 +1681,24 @@ static bool guard_subtree_token_vectors_match(
   return true;
 }
 
-enum class GuardLastSuccessPartialTokenDecision : uint8_t {
-  Keep,
-  DropReachabilityOnly,
-  UnsupportedBail,
-
-};
-
-static GuardLastSuccessPartialTokenDecision
-guard_last_success_partial_token_decision(
-    const GuardSubtreeEntryToken& token,
-    size_t index) {
-  if (index == 0) {
-    return GuardLastSuccessPartialTokenDecision::Keep;
-  }
-  switch (token.kind) {
-    case GuardSubtreeProbeTokenKind::ObjectOnly:
-      // Parent container tokens prove whether this object is still reachable.
-      // Dropping this token is safe only for reachability-only objects: any
-      // semantic guard attached to the object must emit its own token or force
-      // the partial plan to bail.
-      return GuardLastSuccessPartialTokenDecision::DropReachabilityOnly;
-    case GuardSubtreeProbeTokenKind::BoundMethod:
-      // Keep bound methods as hot tokens. A stored bound method is protected by
-      // its parent structural token; the runtime matcher validates the bound
-      // target payload without dereferencing the possibly short-lived method
-      // wrapper.
-      return GuardLastSuccessPartialTokenDecision::Keep;
-    case GuardSubtreeProbeTokenKind::DefaultDevice:
-    case GuardSubtreeProbeTokenKind::GlobalState:
-    case GuardSubtreeProbeTokenKind::TorchFunctionModeStack:
-      // These tokens are valid in the full slow receipt, but the partial fast
-      // path has no local proof that dropping them preserves guard semantics.
-      // Conservatively disable the partial plan instead of silently filtering
-      // them out and later reporting a fast hit.
-      return GuardLastSuccessPartialTokenDecision::UnsupportedBail;
-    case GuardSubtreeProbeTokenKind::NoTensorAliasing:
-    case GuardSubtreeProbeTokenKind::ObjectAliasing:
-      // Relational guard tokens are part of the measured hot path. They are
-      // safe only if kept as hot tokens: dropping them would silently skip the
-      // relation, while keeping them lets container tokens prove rebinding did
-      // not happen and the token matcher verify the guarded objects/types.
-      return GuardLastSuccessPartialTokenDecision::Keep;
-    default:
-      return GuardLastSuccessPartialTokenDecision::Keep;
-  }
+static bool guard_subtree_token_is_aliasing_guard(
+    GuardSubtreeProbeTokenKind kind) {
+  return kind == GuardSubtreeProbeTokenKind::NoTensorAliasing ||
+      kind == GuardSubtreeProbeTokenKind::ObjectAliasing;
 }
 
-static bool guard_last_success_make_partial_hot_tokens(
+static void guard_last_success_make_partial_hot_tokens(
     const std::vector<GuardSubtreeEntryToken>& tokens,
     std::vector<GuardSubtreeEntryToken>& hot_tokens) {
   hot_tokens.clear();
   hot_tokens.reserve(tokens.size());
   for (size_t i = 0; i < tokens.size(); ++i) {
-    switch (guard_last_success_partial_token_decision(tokens[i], i)) {
-      case GuardLastSuccessPartialTokenDecision::Keep:
-        hot_tokens.push_back(tokens[i]);
-        break;
-      case GuardLastSuccessPartialTokenDecision::DropReachabilityOnly:
-        break;
-      case GuardLastSuccessPartialTokenDecision::UnsupportedBail:
-        return false;
+    if ((i != 0 && tokens[i].kind == GuardSubtreeProbeTokenKind::ObjectOnly) ||
+        guard_subtree_token_is_aliasing_guard(tokens[i].kind)) {
+      continue;
     }
+    hot_tokens.push_back(tokens[i]);
   }
-  return true;
 }
 
 static bool guard_subtree_tensor_token_matches_current(
@@ -1828,28 +1727,6 @@ static bool guard_subtree_tensor_no_hasattr_token_matches_current(
     return false;
   }
   return contains == 0;
-}
-
-static bool guard_subtree_special_token_matches_current(
-    const GuardSubtreeEntryToken& token) {
-  switch (token.kind) {
-    case GuardSubtreeProbeTokenKind::DefaultDevice:
-      return token.matches_default_device_current();
-    case GuardSubtreeProbeTokenKind::GlobalState:
-      return token.matches_global_state_current();
-    case GuardSubtreeProbeTokenKind::TorchFunctionModeStack:
-      return torch_function_mode_stack_guard_matches(
-          token.torch_function_mode_stack_guard);
-    default:
-      return false;
-  }
-}
-
-static bool guard_subtree_token_is_aliasing_guard(
-    GuardSubtreeProbeTokenKind kind) {
-
-  return kind == GuardSubtreeProbeTokenKind::NoTensorAliasing ||
-      kind == GuardSubtreeProbeTokenKind::ObjectAliasing;
 }
 
 static bool guard_subtree_token_proves_child_reachability(
@@ -2599,21 +2476,11 @@ static bool guard_last_success_build_partial_plan_tokens(
     std::vector<py::object>& retained_token_objects) {
   stability_tokens = partial_tokens;
   if (!guard_subtree_aliasing_tokens_have_reachability_proof(partial_tokens) ||
-      !guard_last_success_make_partial_hot_tokens(
-          partial_tokens, hot_tokens) ||
       !guard_last_success_build_relation_plans(
           full_tokens, partial_tokens, relation_plans)) {
     return false;
   }
-
-  hot_tokens.erase(
-      std::remove_if(
-          hot_tokens.begin(),
-          hot_tokens.end(),
-          [](const GuardSubtreeEntryToken& token) {
-            return guard_subtree_token_is_aliasing_guard(token.kind);
-          }),
-      hot_tokens.end());
+  guard_last_success_make_partial_hot_tokens(partial_tokens, hot_tokens);
 
   type_proofs.clear();
   for (const auto& token : partial_tokens) {
@@ -2628,18 +2495,6 @@ static bool guard_last_success_build_partial_plan_tokens(
   return true;
 }
 
-static bool guard_subtree_aliasing_token_matches_current(
-    const GuardSubtreeEntryToken& token) {
-  // Relational guards are fully evaluated during the slow receipt pass before
-  // a partial plan is trained. Rechecking the recorded relation among immutable
-  // receipt tokens would be tautological; the live runtime check here is that
-  // the recorded alias operand is still the same object/type. Actual-partial
-  // plan construction applies an additional conservative reachability gate
-    // before these tokens are admitted.
-  return token.object != nullptr && token.type != nullptr &&
-      Py_TYPE(token.object) == token.type;
-}
-
 static bool guard_subtree_bound_method_token_matches_current(
     const GuardSubtreeEntryToken& token) {
   if (token.type == nullptr) {
@@ -2649,12 +2504,6 @@ static bool guard_subtree_bound_method_token_matches_current(
     return token.bound_method_self != nullptr;
   }
   return token.bound_c_method_func != nullptr;
-}
-
-static bool guard_subtree_token_is_reachability_only(
-    const GuardSubtreeEntryToken& token,
-    size_t index) {
-  return index != 0 && token.kind == GuardSubtreeProbeTokenKind::ObjectOnly;
 }
 
 enum class GuardLastSuccessPartialPlanState : uint8_t {
@@ -2866,31 +2715,10 @@ static bool guard_subtree_memo_tokens_match(
       }
       continue;
     }
-    if (token.kind == GuardSubtreeProbeTokenKind::DefaultDevice ||
-        token.kind == GuardSubtreeProbeTokenKind::GlobalState ||
-        token.kind == GuardSubtreeProbeTokenKind::TorchFunctionModeStack) {
-      if (!guard_subtree_special_token_matches_current(token)) {
-        return false;
-      }
-      continue;
-    }
-    if (guard_subtree_token_is_aliasing_guard(token.kind)) {
-      // Keep the hot path O(1). The original relation was checked by the slow
-      // receipt pass; here we only prove the recorded alias operand is still
-      // live with the same type.
-      if (!guard_subtree_aliasing_token_matches_current(token)) {
-        return false;
-      }
-      continue;
-    }
     if (token.kind == GuardSubtreeProbeTokenKind::BoundMethod) {
       if (!guard_subtree_bound_method_token_matches_current(token)) {
         return false;
       }
-      continue;
-    }
-    if (guard_subtree_token_is_reachability_only(token, i)) {
-      // Parent tokens prove whether this non-root object is still reachable.
       continue;
     }
     PyObject* current_object = i == 0 ? root_value : token.object;
@@ -2927,11 +2755,9 @@ static bool guard_subtree_memo_tokens_match(
       }
       continue;
     }
-    GuardSubtreeEntryToken current =
-        GuardSubtreeEntryToken::make(current_object);
-    if (!current.matches(token)) {
-      return false;
-    }
+    // Relational and non-root reachability-only tokens are removed when the
+    // hot token vector is built. Unknown future token kinds fail closed.
+    return false;
   }
   return true;
 }
@@ -4823,46 +4649,7 @@ class DEFAULT_DEVICE : public LeafGuard {
     return check_nopybind_template(value);
   }
 
-  bool supports_subtree_memo() const override {
-    return true;
-  }
-  bool supports_actual_partial_subtree_memo(PyObject*) const override {
-    return true;
-  }
-  bool emits_subtree_memo_token() const override {
-    return true;
-  }
-  bool emits_subtree_memo_token_for_frame_locals() const override {
-    return true;
-  }
-  bool append_subtree_memo_token(
-      PyObject* value,
-      std::vector<GuardSubtreeEntryToken>* tokens) override {
-    return append_subtree_memo_token_template(value, tokens);
-  }
-  bool append_subtree_memo_token(
-      FrameLocalsMapping* value,
-      std::vector<GuardSubtreeEntryToken>* tokens) override {
-    return append_subtree_memo_token_template(value, tokens);
-
-  }
-
  private:
-  template <typename T>
-  bool append_subtree_memo_token_template(
-      T* value,
-      std::vector<GuardSubtreeEntryToken>* tokens) {
-    if (!check_nopybind_template(value)) {
-      return false;
-    }
-    append_guard_subtree_memo_token(
-        tokens,
-        GuardSubtreeEntryToken::make_default_device(
-            _utils_device_dict.ptr(), _device.ptr()),
-        "<DEFAULT_DEVICE>");
-    return true;
-  }
-
   // Save the current device and the module dict during the guard construction.
   py::object _utils_device_dict;
   py::object _device;
@@ -4910,44 +4697,7 @@ class GLOBAL_STATE : public LeafGuard {
     return GuardDebugInfo(true, 1);
   }
 
-  bool supports_subtree_memo() const override {
-    return true;
-  }
-  bool supports_actual_partial_subtree_memo(PyObject*) const override {
-    return true;
-  }
-  bool emits_subtree_memo_token() const override {
-    return true;
-  }
-  bool emits_subtree_memo_token_for_frame_locals() const override {
-    return true;
-  }
-  bool append_subtree_memo_token(
-      PyObject* value,
-      std::vector<GuardSubtreeEntryToken>* tokens) override {
-    return append_subtree_memo_token_template(value, tokens);
-  }
-  bool append_subtree_memo_token(
-      FrameLocalsMapping* value,
-      std::vector<GuardSubtreeEntryToken>* tokens) override {
-    return append_subtree_memo_token_template(value, tokens);
-  }
-
  private:
-  template <typename T>
-  bool append_subtree_memo_token_template(
-      T* value,
-      std::vector<GuardSubtreeEntryToken>* tokens) {
-    if (!check_nopybind(value)) {
-      return false;
-    }
-    append_guard_subtree_memo_token(
-        tokens,
-        GuardSubtreeEntryToken::make_global_state(_guard),
-        "<GLOBAL_STATE>");
-    return true;
-  }
-
   py::object owner_;
   GlobalStateGuard* _guard;
 };
@@ -7673,53 +7423,9 @@ class TORCH_FUNCTION_MODE_STACK : public LeafGuard {
     return check_nopybind_template(value);
   }
 
-  bool supports_subtree_memo() const override {
-    return true;
-  }
-  bool supports_actual_partial_subtree_memo(PyObject*) const override {
-    return true;
-  }
-  bool emits_subtree_memo_token() const override {
-    return true;
-  }
-  bool emits_subtree_memo_token_for_frame_locals() const override {
-    return true;
-  }
-  bool append_subtree_memo_token(
-      PyObject* value,
-      std::vector<GuardSubtreeEntryToken>* tokens) override {
-    return append_subtree_memo_token_template(value, tokens);
-  }
-  bool append_subtree_memo_token(
-      FrameLocalsMapping* value,
-      std::vector<GuardSubtreeEntryToken>* tokens) override {
-    return append_subtree_memo_token_template(value, tokens);
-  }
-
  private:
-  template <typename T>
-  bool append_subtree_memo_token_template(
-      T* value,
-      std::vector<GuardSubtreeEntryToken>* tokens) {
-    if (!check_nopybind_template(value)) {
-      return false;
-    }
-    append_guard_subtree_memo_token(
-        tokens,
-        GuardSubtreeEntryToken::make_torch_function_mode_stack(
-            static_cast<const void*>(this)),
-        "<TORCH_FUNCTION_MODE_STACK>");
-    return true;
-  }
-
   std::vector<PyTypeObject*> _ref_stack;
 };
-
-static bool torch_function_mode_stack_guard_matches(const void* guard) {
-  return guard != nullptr &&
-      static_cast<const TORCH_FUNCTION_MODE_STACK*>(guard)
-          ->check_nopybind_template(static_cast<PyObject*>(nullptr));
-}
 
 class DISPATCH_KEY_SET_MATCH : public LeafGuard {
  public:
