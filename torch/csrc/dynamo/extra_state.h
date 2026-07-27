@@ -66,8 +66,12 @@ typedef struct VISIBILITY_HIDDEN ExtraState {
   py::dict frame_state;
   // Actions to apply to all frames with this code object
   FrameExecStrategy strategy{DEFAULT, DEFAULT};
-
   ExtraState(PyCodeObject* orig_code_arg);
+  ExtraState(const ExtraState&) = delete;
+  ExtraState(ExtraState&&) = delete;
+  ExtraState& operator=(const ExtraState&) = delete;
+  ExtraState& operator=(ExtraState&&) = delete;
+  ~ExtraState();
   CacheEntry* get_first_entry();
   void move_to_front(CacheEntry* cache_entry);
   void move_to_back(CacheEntry* cache_entry);

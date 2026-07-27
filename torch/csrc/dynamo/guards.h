@@ -1,5 +1,5 @@
 #pragma once
-#include <c10/core/GradMode.h>
+#include <c10/core/impl/LocalDispatchKeySet.h>
 #include <torch/csrc/dynamo/framelocals_mapping.h>
 #include <torch/csrc/python_headers.h>
 #include <torch/csrc/utils/pybind.h>
@@ -12,6 +12,17 @@ PyObject* torch_c_dynamo_guards_init();
 // not visible there.
 void* convert_to_root_guard_manager(py::object root);
 bool run_root_guard_manager(void* root, FrameLocalsMapping* f_locals);
+bool run_root_guard_manager_with_last_success_receipt(
+    void* receipt,
+    void* entry_key,
+    void* root,
+    FrameLocalsMapping* f_locals,
+    bool is_skip_guard_eval_unsafe);
+
+void* create_guard_last_success_receipt();
+void destroy_guard_last_success_receipt(void* receipt);
+void reset_guard_last_success_receipt(void* receipt);
+bool is_guard_last_success_receipt_enabled(void* receipt);
 
 extern thread_local bool tls_is_in_mode_without_ignore_compile_internals;
 
@@ -27,7 +38,6 @@ struct LocalState {
   // TLS state that changes operators
   c10::impl::LocalDispatchKeySet dispatch_modifier;
   c10::DispatchKeySet override_dispatch_key_set;
-  bool grad_mode_enabled;
   bool should_mask_python_keys;
 
   at::DispatchKeySet apply(at::DispatchKeySet ks) const {
@@ -51,7 +61,6 @@ struct LocalState {
   LocalState()
       : dispatch_modifier(c10::impl::tls_local_dispatch_key_set()),
         override_dispatch_key_set(c10::BackendComponent::InvalidBit),
-        grad_mode_enabled(at::GradMode::is_enabled()),
         should_mask_python_keys(
             !get_is_in_mode_without_ignore_compile_internals()) {}
 
@@ -93,6 +102,14 @@ class TensorCheck {
       const LocalState& state,
       const at::Tensor& v,
       const std::string& tensor_name);
+
+  const std::vector<std::optional<c10::SymInt>>& sizes() const {
+    return sizes_;
+  }
+
+  const std::vector<std::optional<c10::SymInt>>& strides() const {
+    return strides_;
+  }
 
   PyTypeObject* pytype;
 

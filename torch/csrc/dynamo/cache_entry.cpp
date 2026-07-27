@@ -20,6 +20,8 @@ CacheEntry::CacheEntry(const py::handle& guarded_code, PyObject* backend)
       this->guard_manager.attr("root"));
   this->diff_guard_root_mgr = torch::dynamo::convert_to_root_guard_manager(
       this->guard_manager.attr("diff_guard_root"));
+  this->last_success_receipt =
+      torch::dynamo::create_guard_last_success_receipt();
 }
 
 C10_DIAGNOSTIC_PUSH_AND_IGNORED_IF_DEFINED(
@@ -27,6 +29,8 @@ C10_DIAGNOSTIC_PUSH_AND_IGNORED_IF_DEFINED(
 C10_DIAGNOSTIC_PUSH_AND_IGNORED_IF_DEFINED("-Wdeprecated-copy-dtor")
 // NOLINTNEXTLINE(bugprone-exception-escape)
 CacheEntry::~CacheEntry() {
+  torch::dynamo::destroy_guard_last_success_receipt(
+      this->last_success_receipt);
   // prevent guard_manager from use-after-free when invalidating
   this->guard_manager.attr("cache_entry") = py::none();
   this->guard_manager.attr("extra_state") = py::none();
@@ -50,6 +54,8 @@ void CacheEntry::invalidate(py::object deleted_guard_manager) {
   this->guard_manager.attr("extra_state") = py::none();
   this->code = py::none();
   this->guard_manager = std::move(deleted_guard_manager);
+  torch::dynamo::reset_guard_last_success_receipt(
+      this->last_success_receipt);
   this->root_mgr = nullptr;
   this->trace_annotation = "Invalidated";
   this->backend = py::none();

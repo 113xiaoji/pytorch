@@ -26,8 +26,9 @@ CacheEntry* ExtraState::get_first_entry() {
   return &this->cache_entry_list.front();
 }
 
-ExtraState::ExtraState(PyCodeObject* orig_code_arg)
-    : orig_code(orig_code_arg) {}
+ExtraState::ExtraState(PyCodeObject* orig_code_arg) : orig_code(orig_code_arg) {}
+
+ExtraState::~ExtraState() = default;
 
 void ExtraState::move_to_front(CacheEntry* cache_entry) {
   CHECK(cache_entry->_owner == this);
@@ -162,12 +163,18 @@ void lookup(
 
     if (valid) {
       try {
-        if (is_skip_guard_eval_unsafe) {
-          valid = torch::dynamo::run_root_guard_manager(
-              cache_entry.diff_guard_root_mgr, f_locals);
+        void* root = is_skip_guard_eval_unsafe ? cache_entry.diff_guard_root_mgr
+                                               : cache_entry.root_mgr;
+        if (C10_LIKELY(cache_entry.last_success_receipt == nullptr)) {
+          valid = torch::dynamo::run_root_guard_manager(root, f_locals);
         } else {
-          valid = torch::dynamo::run_root_guard_manager(
-              cache_entry.root_mgr, f_locals);
+          valid =
+              torch::dynamo::run_root_guard_manager_with_last_success_receipt(
+                  cache_entry.last_success_receipt,
+                  &cache_entry,
+                  root,
+                  f_locals,
+                  is_skip_guard_eval_unsafe);
         }
       } catch (py::error_already_set& e) {
         if (guard_error_hook) {
@@ -194,7 +201,7 @@ void lookup(
     ++index;
   }
   if (found) {
-    if (use_lru) {
+    if (use_lru && found != extra_state->get_first_entry()) {
       extra_state->move_to_front(found);
     }
     *maybe_cached_code = found->code.ptr();
