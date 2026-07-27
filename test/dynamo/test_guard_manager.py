@@ -2,6 +2,10 @@
 import abc
 import functools
 import inspect
+import os
+import subprocess
+import sys
+import textwrap
 import unittest
 import weakref
 
@@ -1394,6 +1398,71 @@ class RecursiveDictGuardTests(RecursiveDictTagTests):
         ):
             with install_guard_manager_testing_hook(max_size_test):
                 opt_fn(x)
+
+
+class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
+    def test_actual_partial_preserves_module_and_residual_guards(self):
+        script = """
+            import torch
+            from torch._dynamo.testing import CompileCounter
+
+            global_bias = torch.tensor(3.0)
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.register_buffer("scale", torch.tensor(2.0))
+                    self.offsets = [1.0]
+
+                def forward(self, x):
+                    return x * self.scale + self.offsets[0] + global_bias
+
+            model = Model()
+            counter = CompileCounter()
+            compiled = torch.compile(
+                model, backend=counter, fullgraph=True, dynamic=True
+            )
+
+            x = torch.ones(4)
+            for _ in range(8):
+                torch.testing.assert_close(compiled(x), model(x))
+            assert counter.frame_count == 1, counter.frame_count
+
+            model.scale = torch.tensor(4.0)
+            torch.testing.assert_close(compiled(x), model(x))
+
+            model.scale.resize_(4).fill_(6.0)
+            torch.testing.assert_close(compiled(x), model(x))
+
+            model.offsets[0] = 5.0
+            torch.testing.assert_close(compiled(x), model(x))
+
+            global_bias = torch.tensor(7.0)
+            torch.testing.assert_close(compiled(x), model(x))
+
+            model.scale = torch.tensor(6.0)
+            x = torch.ones(9)
+            torch.testing.assert_close(compiled(x), model(x))
+
+            def alias_sensitive(a, b):
+                return a + b if a is b else a - b
+
+            compiled_alias = torch.compile(
+                alias_sensitive, backend="eager", fullgraph=True
+            )
+            a = torch.ones(4)
+            b = torch.full((4,), 2.0)
+            torch.testing.assert_close(compiled_alias(a, a), alias_sensitive(a, a))
+            torch.testing.assert_close(compiled_alias(a, b), alias_sensitive(a, b))
+        """
+        env = os.environ.copy()
+        env["TORCHDYNAMO_GUARD_FAST_PLAN"] = "1"
+        subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.getcwd(),
+            env=env,
+            check=True,
+        )
 
 
 if __name__ == "__main__":
