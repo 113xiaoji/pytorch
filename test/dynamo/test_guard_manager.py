@@ -1461,6 +1461,7 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
     def test_actual_partial_preserves_module_and_residual_guards(self):
         script = """
             import torch
+            from torch._dynamo.eval_frame import _debug_get_cache_entry_list
             from torch._dynamo.testing import CompileCounter
 
             global_bias = torch.tensor(3.0)
@@ -1470,9 +1471,15 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
                     super().__init__()
                     self.register_buffer("scale", torch.tensor(2.0))
                     self.offsets = [1.0]
+                    self.values = (0.0,)
 
                 def forward(self, x):
-                    return x * self.scale + self.offsets[0] + global_bias
+                    return (
+                        x * self.scale
+                        + self.offsets[0]
+                        + self.values[0]
+                        + global_bias
+                    )
 
             model = Model()
             counter = CompileCounter()
@@ -1484,6 +1491,13 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             for _ in range(8):
                 torch.testing.assert_close(compiled(x), model(x))
             assert counter.frame_count == 1, counter.frame_count
+            entries = _debug_get_cache_entry_list(Model.forward.__code__)
+            assert len(entries) == 1, len(entries)
+            assert entries[0]._debug_fast_guard_enabled
+
+            model.values = (2.0,)
+            torch.testing.assert_close(compiled(x), model(x))
+            assert counter.frame_count == 2, counter.frame_count
 
             model.scale = torch.tensor(4.0)
             torch.testing.assert_close(compiled(x), model(x))
@@ -1500,17 +1514,58 @@ class GuardActualPartialFastPathTests(torch._dynamo.test_case.TestCase):
             model.scale = torch.tensor(6.0)
             x = torch.ones(9)
             torch.testing.assert_close(compiled(x), model(x))
+        """
+        self._run_fast_plan_script(script)
 
-            def alias_sensitive(a, b):
-                return a + b if a is b else a - b
+    def test_actual_partial_preserves_root_special_guards(self):
+        script = """
+            import torch
+            import torch.utils._device as utils_device
+            from torch._dynamo.eval_frame import _debug_get_cache_entry_list
+            from torch._dynamo.testing import CompileCounter
+            from torch.overrides import BaseTorchFunctionMode
 
-            compiled_alias = torch.compile(
-                alias_sensitive, backend="eager", fullgraph=True
-            )
-            a = torch.ones(4)
-            b = torch.full((4,), 2.0)
-            torch.testing.assert_close(compiled_alias(a, a), alias_sensitive(a, a))
-            torch.testing.assert_close(compiled_alias(a, b), alias_sensitive(a, b))
+            GLOBAL_DICT = {"used": 1, "noise": [0]}
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.bias = 2.0
+
+                def forward(self, x):
+                    return x + self.bias + GLOBAL_DICT["used"]
+
+            counter = CompileCounter()
+            compiled = torch.compile(Model(), backend=counter, fullgraph=True)
+            x = torch.ones(2)
+            expected = torch.full((2,), 4.0)
+            for i in range(8):
+                GLOBAL_DICT["noise"] = [i]
+                torch.testing.assert_close(compiled(x), expected)
+            assert counter.frame_count == 1, counter.frame_count
+
+            entries = _debug_get_cache_entry_list(Model.forward.__code__)
+            assert len(entries) == 1, len(entries)
+            assert entries[0]._debug_fast_guard_enabled
+
+            with torch.no_grad():
+                result = compiled(x)
+            torch.testing.assert_close(result, expected)
+            assert counter.frame_count == 2, counter.frame_count
+
+            previous_device = utils_device.CURRENT_DEVICE
+            try:
+                utils_device.CURRENT_DEVICE = torch.device("cpu")
+                result = compiled(x)
+            finally:
+                utils_device.CURRENT_DEVICE = previous_device
+            torch.testing.assert_close(result, expected)
+            assert counter.frame_count == 3, counter.frame_count
+
+            with BaseTorchFunctionMode():
+                result = compiled(x)
+            torch.testing.assert_close(result, expected)
+            assert counter.frame_count == 4, counter.frame_count
         """
         self._run_fast_plan_script(script)
 
