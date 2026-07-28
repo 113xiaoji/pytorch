@@ -12,6 +12,17 @@ PyObject* torch_c_dynamo_guards_init();
 // not visible there.
 void* convert_to_root_guard_manager(py::object root);
 bool run_root_guard_manager(void* root, FrameLocalsMapping* f_locals);
+bool run_root_guard_manager_with_last_success_receipt(
+    void* receipt,
+    void* entry_key,
+    void* root,
+    FrameLocalsMapping* f_locals,
+    bool is_skip_guard_eval_unsafe);
+
+void* create_guard_last_success_receipt();
+void destroy_guard_last_success_receipt(void* receipt);
+void reset_guard_last_success_receipt(void* receipt);
+bool is_guard_last_success_receipt_enabled(void* receipt);
 
 extern thread_local bool tls_is_in_mode_without_ignore_compile_internals;
 
@@ -93,6 +104,14 @@ class TensorCheck {
       const LocalState& state,
       const at::Tensor& v,
       const std::string& tensor_name);
+
+  const std::vector<std::optional<c10::SymInt>>& sizes() const {
+    return sizes_;
+  }
+
+  const std::vector<std::optional<c10::SymInt>>& strides() const {
+    return strides_;
+  }
 
   PyTypeObject* pytype;
 

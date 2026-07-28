@@ -32,6 +32,7 @@ class _CacheEntry:
     guard_manager: GuardManagerWrapper
     backend: Callable
     next: _CacheEntry | None
+    _debug_fast_guard_enabled: bool
 
 class _PrecompileEntry:
     guard_manager: GuardManagerWrapper
