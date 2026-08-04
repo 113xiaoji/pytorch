@@ -231,6 +231,7 @@ class GuardManager:
         self,
         equals_val: Any,
         verbose_code_parts: list[str],
+        actual_partial_safe_constant: bool = False,
     ) -> None: ...
     def add_global_state_guard(
         self, initial_state: Any, verbose_code_parts: list[str]
